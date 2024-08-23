@@ -1,4 +1,10 @@
 # bayes_cn_hfs <!-- omit in toc -->
+
+![publish](https://github.com/tvwenger/bayes_cn_hfs/actions/workflows/publish.yml/badge.svg)
+![tests](https://github.com/tvwenger/bayes_cn_hfs/actions/workflows/tests.yml/badge.svg)
+[![Documentation Status](https://readthedocs.org/projects/bayes-cn-hfs/badge/?version=latest)](https://bayes-cn-hfs.readthedocs.io/en/latest/?badge=latest)
+[![codecov](https://codecov.io/gh/tvwenger/bayes_cn_hfs/graph/badge.svg?token=M352CU79JR)](https://codecov.io/gh/tvwenger/bayes_cn_hfs)
+
 A Bayesian CN Hyperfine Spectral Model
 
 `bayes_cn_hfs` implements models to infer the physics of the interstellar medium from hyperfine spectral observations as well as the carbon isotopic ratio from observations of CN and 13CN.
@@ -21,8 +27,11 @@ A Bayesian CN Hyperfine Spectral Model
 # Installation
 
 ## Basic Installation
-Install with pip:
+
+Install with `pip` in a `conda` virtual environment:
 ```
+conda create --name bayes_cn_hfs -c conda-forge pymc pip
+conda activate bayes_cn_hfs
 pip install bayes_cn_hfs
 ```
 
@@ -38,19 +47,15 @@ pip install -e .
 
 # Notes on Physics & Radiative Transfer
 
-All models in `bayes_cn_hfs` apply the same physics and equations of radiative transfer. The temperature parameter (`log10_temp`) is assumed to represent both the excitation temperature and the kinetic temperature (the LTE assumption).
+All models in `bayes_cn_hfs` apply the same physics and equations of radiative transfer.
 
-The thermal FWHM line width is thus $\Delta V_{\rm th} = \sqrt{8\ln 2 k_B T / m}$ where $m$ is the molecular mass.
-
-The line profile is assumed Gaussian with a FWHM line width given by $\Delta V = \sqrt{V_{\rm th}^2 + V_{\rm nt}^2}$. We further normalize the line profile to account for channel dilution (i.e., poor spectral resolution).
-
-The hyperfine transition upper state column density is derived from the total column density and temperature assuming detailed balance [(Magnum & Shirley, 2015, equation 31)](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract).
+The hyperfine transition upper state column density is derived from the total column density and temperature assuming detailed balance and constant excitation temperature [(Magnum & Shirley, 2015, equation 31)](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract). For the HFS anomaly models `HFSAnomalyModel` and `CNRatioAnomalyModel`, the excitation temperature is allowed to vary between components, but the average cloud excitation temperature is used for the detailed balance calculation.
 
 The transition optical depth is taken from [Magnum & Shirley (2015) equation 29](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract).
 
-The radiative transfer is calculated explicitly assuming an off-source background temperature `bg_temp` (see below) similar to [Magnum & Shirley (2015) equation 23](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract).
+The radiative transfer is calculated explicitly assuming an off-source background temperature `bg_temp` (see below) similar to [Magnum & Shirley (2015) equation 23](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract). By default, the clouds are ordered from *nearest* to *farthest*, so optical depth effects (i.e., self-absorption) may be present.
 
-Notably, since these are *forward models*, we do not make assumptions regarding the optical depth or the Rayleigh-Jeans limit. These effects are *predicted* by the model. There is one exception: the `ordered_velocity` argument, [described below](#ordered-velocity).
+Notably, since these are *forward models*, we do not make assumptions regarding the optical depth or the Rayleigh-Jeans limit. These effects are *predicted* by the model. There is one exception: the `ordered` argument, [described below](#ordered).
 
 # Models
 
@@ -60,14 +65,14 @@ The models provided by `bayes_cn_hfs` are implemented in the [`bayes_spec`](http
 
 The basic model is `HFSModel`, a general purpose model for modelling any hyperfine spectral data. The model assumes that the emission can be explained by the radiative transfer of emission through a series of isothermal, homogeneous clouds (in local thermodynamic equilibrium, LTE) as well as a polynomial spectral baseline. The following diagram demonstrates the relationship between the free parameters (empty ellipses), deterministic quantities (rectangles), model predictions (filled ellipses), and observations (filled, round rectangles). Many of the parameters are internally normalized (and thus have names like `_norm`). The subsequent tables describe the model parameters in more detail.
 
-![hfs model graph](examples/hfs_model.png)
+![hfs model graph](docs/source/notebooks/hfs_model.png)
 
-| Cloud Parameter<br>`variable` | Parameter                               | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
-| :---------------------------- | :-------------------------------------- | :------- | :------------------------------------------------------- | :---------------------------- |
-| `log10_N`                     | Column density                          | `cm-2`   | $\log_{10}N \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$      | `[14.0, 1.0]`                 |
-| `log10_temp`                  | Kinetic/excitation temperature          | `K`      | $\log_{10}T \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$      | `[1.0, 0.1]`                  |
-| `log10_nonthermal_fwhm`       | Non-thermal FWHM line width             | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$      | `1.0`                         |  |
-| `velocity`                    | Velocity (same reference frame as data) | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$               | `[0.0, 10.0]`                 |
+| Cloud Parameter<br>`variable` | Parameter                               | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`     | Default<br>`prior_{variable}` |
+| :---------------------------- | :-------------------------------------- | :------- | :----------------------------------------------------------- | :---------------------------- |
+| `log10_N`                     | Total column density                    | `cm-2`   | $\log_{10}N \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$          | `[14.0, 1.0]`                 |
+| `log10_tex`                   | Excitation temperature                  | `K`      | $\log_{10}T_{\rm ex} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$ | `[1.0, 0.1]`                  |
+| `log10_fwhm`                  | FWHM line width                         | `km s-1` | $\Delta V \sim {\rm HalfNormal}(\sigma=p)$                   | `1.0`                         |  |
+| `velocity`                    | Velocity (same reference frame as data) | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                   | `[0.0, 10.0]`                 |
 
 | Hyper Parameter<br>`variable` | Parameter                                   | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
 | :---------------------------- | :------------------------------------------ | :---- | :------------------------------------------------------- | :---------------------------- |
@@ -76,25 +81,25 @@ The basic model is `HFSModel`, a general purpose model for modelling any hyperfi
 
 ## `HFSAnomalyModel`
 
-`HFSAnomalyModel` is like `HFSModel`, except that it adds additional parameters that describe deviations from LTE in the hyperfine optical depths. The parameter defines the fractional deviation (i.e., `1.0` means LTE, `1.1` means 10% greater optical depth than LTE, etc.). There is one free parameter for each hyperfine transition, and the parameters are internally normalized such that the total optical depth across all transitions is equal to the model predicted total opacity. The following table describes the additional parameters (in addition to those in `HFSModel`).
+`HFSAnomalyModel` is like `HFSModel`, except that it allows for the excitation temperature of individual hyperfine components to deviate from the average cloud excitation temperature. The following table describes the additional parameters (in addition to those in `HFSModel`).
 
-![hfs anomaly model graph](examples/hfs_anomaly_model.png)
+![hfs anomaly model graph](docs/source/notebooks/hfs_anomaly_model.png)
 
-| Cloud Parameter<br>`variable` | Parameter                    | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
-| ----------------------------- | ---------------------------- | ----- | -------------------------------------------------------- | ----------------------------- |
-| `hyperfine_anomaly`           | Fractional hyperfine anomaly |       | $\Beta \sim {\rm Normal}(\mu=1, \sigma=p)$               | `0.1`                         |
+| Cloud Parameter<br>`variable` | Parameter                      | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`        | Default<br>`prior_{variable}` |
+| ----------------------------- | ------------------------------ | ----- | --------------------------------------------------------------- | ----------------------------- |
+| `tex_anomaly`                 | Excitation temperature anomaly | `K`   | $T_{\rm ex} \sim {\rm Normal}(\mu=T_{\rm ex, cloud}, \sigma=p)$ | `1.0`                         |
 
 ## `CNRatioModel`
 
-`bayes_cn_hfs` also implements `CNRatioModel`, a model to infer the $^{12}{\rm C}/^{13}{\rm C}$ isotopic ratio from hyperfine observations of ${\rm CN}$ and $^{13}{\rm CN}$. Both species are assumed to be described by the same physical conditions (temperature, line width, etc.).
+`bayes_cn_hfs` also implements `CNRatioModel`, a model to infer the $^{12}{\rm C}/^{13}{\rm C}$ isotopic ratio from hyperfine observations of ${\rm CN}$ and $^{13}{\rm CN}$. Both species are assumed to be described by the same physical conditions (excitation temperature, line width, etc.).
 
-![cn ratio model graph](examples/cn_ratio_model.png)
+![cn ratio model graph](docs/source/notebooks/cn_ratio_model.png)
 
 | Cloud Parameter<br>`variable` | Parameter                                             | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`     | Default<br>`prior_{variable}` |
 | :---------------------------- | :---------------------------------------------------- | :------- | :----------------------------------------------------------- | :---------------------------- |
 | `log10_N_12CN`                | ${\rm CN}$ Column density                             | `cm-2`   | $\log_{10}N_{\rm CN} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$ | `[14.0, 1.0]`                 |
-| `log10_temp`                  | Kinetic/excitation temperature                        | `K`      | $\log_{10}T \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$          | `[1.0, 0.1]`                  |
-| `log10_nonthermal_fwhm`       | Non-thermal FWHM line width                           | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$          | `1.0`                         |  |
+| `log10_tex`                   | Excitation temperature                                | `K`      | $\log_{10}T_{\rm ex} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$ | `[1.0, 0.1]`                  |
+| `log10_fwhm`                  | FWHM line width                                       | `km s-1` | $\Delta V \sim {\rm HalfNormal}(\sigma=p)$                   | `1.0`                         |  |
 | `velocity`                    | Velocity (same reference frame as data)               | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                   | `[0.0, 10.0]`                 |
 | `ratio_13C_12C`               | $^{13}{\rm C}/^{12}{\rm C}$ abundance ratio by number | ``       | $^{13}{\rm C}/^{12}{\rm C} \sim {\rm HalfNormal}(\sigma=p)$  | `0.01`                        |
 
@@ -102,18 +107,17 @@ The basic model is `HFSModel`, a general purpose model for modelling any hyperfi
 | :---------------------------- | :------------------------------------------ | :---- | :------------------------------------------------------- | :---------------------------- |
 | `rms_12CN`                    | ${\rm CN}$ spectral rms noise               | `K`   | ${\rm rms} \sim {\rm HalfNormal}(\sigma=p)$              | `0.01`                        |
 | `rms_13CN`                    | $^{13}{\rm CN}$ spectral rms noise          | `K`   | ${\rm rms} \sim {\rm HalfNormal}(\sigma=p)$              | `0.01`                        |
-| `baseline_coeffs_12CN`        | Normalized polynomial baseline coefficients | ``    | $\beta_i \sim {\rm Normal}(\mu=0.0, \sigma=p_i)$         | `[1.0]*baseline_degree`       |
-| `baseline_coeffs_13CN`        | Normalized polynomial baseline coefficients | ``    | $\beta_i \sim {\rm Normal}(\mu=0.0, \sigma=p_i)$         | `[1.0]*baseline_degree`       |
+| `baseline_coeffs`             | Normalized polynomial baseline coefficients | ``    | $\beta_i \sim {\rm Normal}(\mu=0.0, \sigma=p_i)$         | `[1.0]*baseline_degree`       |
 
 ## `CNRatioAnomalyModel`
 
-`CNRatioAnomalyModel` is like `CNRatioModel`, except that it adds hyperfine anomaly parameters to the $^{12}{\rm CN}$ hyperfine transitions. The following table describes this new parameter.
+`CNRatioAnomalyModel` is like `CNRatioModel`, except that it adds hyperfine anomaly parameters to the $^{12}{\rm CN}$ hyperfine transitions *only*. The following table describes this new parameter.
 
-![cn ratio anomaly model graph](examples/cn_ratio_anomaly_model.png)
+![cn ratio anomaly model graph](docs/source/notebooks/cn_ratio_anomaly_model.png)
 
-| Cloud Parameter<br>`variable` | Parameter                                    | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
-| ----------------------------- | -------------------------------------------- | ----- | -------------------------------------------------------- | ----------------------------- |
-| `hyperfine_anomaly_12CN`      | $^{12}{\rm CN}$ fractional hyperfine anomaly |       | $\Beta_{\rm CN} \sim {\rm Normal}(\mu=1, \sigma=p)$      | `0.1`                         |
+| Cloud Parameter<br>`variable` | Parameter                         | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`            | Default<br>`prior_{variable}` |
+| ----------------------------- | --------------------------------- | ----- | ------------------------------------------------------------------- | ----------------------------- |
+| `tex_12CN_anomaly`            | CN excitation temperature anomaly | `K`   | $T_{\rm ex, CN} \sim {\rm Normal}(\mu=T_{\rm ex, cloud}, \sigma=p)$ | `1.0`                         |
 
 ## `ordered`
 
@@ -127,7 +131,7 @@ If we assume that the emission is optically thin, then we can set `ordered=True`
 
 # Syntax & Examples
 
-See the various notebooks under [examples](https://github.com/tvwenger/bayes_cn_hfs/tree/main/examples) for demonstrations of these models.
+See the various tutorial notebooks under [docs/source/notebooks](https://github.com/tvwenger/bayes_cn_hfs/tree/main/docs/source/notebooks). Tutorials and the full API are available here: https://bayes-cn-hfs.readthedocs.io.
 
 # Issues and Contributing
 
