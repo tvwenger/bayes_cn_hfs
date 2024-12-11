@@ -9,12 +9,13 @@ This code is licensed under MIT license (see LICENSE for details)
 
 import pymc as pm
 
-from bayes_cn_hfs import HFSModel
+from bayes_cn_hfs import HFSLTEModel
 from bayes_cn_hfs import physics
 
 
-class HFSAnomalyModel(HFSModel):
-    """Definition of the HFSAnomalyModel. SpecData key must be "observation"."""
+class HFSAnomalyModel(HFSLTEModel):
+    """Definition of the HFSAnomalyModel. SpecData key must be "observation" and contain
+    brightness temperature data."""
 
     def __init__(self, *args, **kwargs):
         """Initialize a new HFSAnomalyModel instance"""
@@ -64,13 +65,16 @@ class HFSAnomalyModel(HFSModel):
             log10_tex_comp_norm = pm.Normal("log10_tex_comp_norm", mu=0.0, sigma=1.0, dims=["component", "cloud"])
             _ = pm.Deterministic(
                 "log10_tex_comp",
-                self.model["log10_tex"] + log10_tex_anomaly * log10_tex_comp_norm,
+                self.model["log10_Tkin"] + log10_tex_anomaly * log10_tex_comp_norm,
                 dims=["component", "cloud"],
             )
 
     def add_likelihood(self):
-        """Add likelihood to the model. SpecData key must be "observation"."""
-        cloud_tex = 10.0 ** self.model["log10_tex"]
+        """Add likelihood to the model. SpecData key must be "observation" and contain
+        brightness temperature data."""
+        # Non-LTE assumption: use kinetic temperature for detailed balance calculation and
+        # non-LTE excitation temperature for optical depth calculation.
+        cloud_tex = 10.0 ** self.model["log10_Tkin"]
         component_tex = 10.0 ** self.model["log10_tex_comp"]
 
         # Predict optical depth spectrum (shape: spectral, components, clouds)
@@ -79,7 +83,7 @@ class HFSAnomalyModel(HFSModel):
             self.data["observation"].spectral,
             self.model["log10_N"],
             self.model["velocity"],
-            self.model["fwhm"],
+            self.model["fwhm2"],
             cloud_tex,
             component_tex,
         )

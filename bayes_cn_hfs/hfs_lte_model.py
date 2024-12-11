@@ -1,6 +1,6 @@
 """
-hfs_model.py
-HFSModel definition
+hfs_lte_model.py
+HFSLTEModel definition
 
 Copyright(C) 2024 by
 Trey V. Wenger; tvwenger@gmail.com
@@ -17,8 +17,9 @@ from bayes_spec import BaseModel
 from bayes_cn_hfs import physics
 
 
-class HFSModel(BaseModel):
-    """Definition of the HFS model. SpecData key must be "observation"."""
+class HFSLTEModel(BaseModel):
+    """Definition of the HFS LTE model. SpecData key must be "observation" and contain brightness
+    temperature data."""
 
     def __init__(
         self,
@@ -52,7 +53,7 @@ class HFSModel(BaseModel):
         # Select features used for posterior clustering
         self._cluster_features += [
             "log10_N",
-            "fwhm",
+            "fwhm2",
             "velocity",
         ]
 
@@ -60,27 +61,26 @@ class HFSModel(BaseModel):
         self.var_name_map.update(
             {
                 "log10_N": r"log$_{10}$ $N$ (cm$^{-2}$)",
-                "log10_tex": r"log$_{10}$ $T_{\rm ex}$ (K)",
                 "log10_depth": r"log$_{10}$ $d$ (pc)",
                 "log10_Tkin": r"$\log_{10} T_{\rm kin}$ (K)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
                 "log10_nth_fwhm_1pc": r"log$_{10}$ $\Delta V_{\rm 1 pc}$ (km s$^{-1}$)",
                 "depth_nth_fwhm_power": r"$\alpha$",
-                "fwhm_thermal": r"$\Delta V_{\rm th}$ (km s$^{-1}$)",
-                "fwhm_nonthermal": r"$\Delta V_{\rm nth}$ (km s$^{-1}$)",
-                "fwhm": r"$\Delta V$ (km s$^{-1}$)",
+                "fwhm2_thermal": r"$\Delta V^2_{\rm th}$ (km$^2$ s$^{-2}$)",
+                "fwhm2_nonthermal": r"$\Delta V^2_{\rm nth}$ (km$^2$ s$^{-2}$)",
+                "fwhm2": r"$\Delta V^2$ (km$^2$ s$^{-2}$)",
             }
         )
 
     def add_priors(
         self,
         prior_log10_N: Iterable[float] = [14.0, 1.0],
-        prior_log10_tex: Iterable[float] = [1.0, 0.1],
         prior_log10_depth: Iterable[float] = [0.0, 0.25],
-        prior_log10_Tkin: Iterable[float] = [2.0, 1.0],
+        prior_log10_Tkin: Iterable[float] = [1.0, 1.0],
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_log10_nth_fwhm_1pc: Iterable[float] = [0.2, 0.1],
         prior_depth_nth_fwhm_power: Iterable[float] = [0.4, 0.1],
+        prior_rms: float = 0.01,
         prior_baseline_coeffs: Optional[Iterable[float]] = None,
         ordered: bool = False,
     ):
@@ -91,9 +91,6 @@ class HFSModel(BaseModel):
         prior_log10_N : Iterable[float], optional
             Prior distribution on log10 total column density (cm-2), by default [14.0, 1.0], where
             log10_N ~ Normal(mu=prior[0], sigma=prior[1])
-        prior_log10_tex : Iterable[float], optional
-            Prior distribution on log10 excitation temperature (K), by default [1.0, 0.1], where
-            log10_tex ~ Normal(mu=prior[0], sigma=prior[1])
         prior_log10_depth : Iterable[float], optional
             Prior distribution on log10 depth (pc), by default [0.0, 0.25], where
             log10_depth ~ Normal(mu=prior[0], sigma=prior[1])
@@ -109,6 +106,9 @@ class HFSModel(BaseModel):
         prior_depth_nth_fwhm_power : Iterable[float], optional
             Prior distribution on depth vs. non-thermal line width power law index, by default [0.4, 0.1], where
             depth_nth_fwhm_power ~ Normal(mu=prior[0], sigma=prior[1])
+        prior_rms : float, optional
+            Prior distribution on spectral rms (K), by default 0.01, where
+            rms ~ HalfNormal(sigma=prior)
         prior_baseline_coeffs : Optional[Iterable[float]], optional
             Width of normal prior distribution on the normalized baseline polynomial coefficients.
             Must be a list of length `baseline_degree+1`. If None, use `[1.0]*(baseline_degree+1)`,
@@ -130,16 +130,6 @@ class HFSModel(BaseModel):
             _ = pm.Deterministic(
                 "log10_N",
                 prior_log10_N[0] + prior_log10_N[1] * log10_N_norm,
-                dims="cloud",
-            )
-
-            # gas excitation temperature (K; shape: clouds)
-            log10_tex_norm = pm.Normal(
-                "log10_tex_norm", mu=0.0, sigma=1.0, dims="cloud"
-            )
-            _ = pm.Deterministic(
-                "log10_tex",
-                prior_log10_tex[0] + prior_log10_tex[1] * log10_tex_norm,
                 dims="cloud",
             )
 
@@ -207,38 +197,44 @@ class HFSModel(BaseModel):
                 + prior_depth_nth_fwhm_power[1] * depth_nth_fwhm_power_norm,
             )
 
-            # Thermal FWHM (km/s; shape: clouds)
-            fwhm_thermal = pm.Deterministic(
-                "fwhm_thermal",
-                physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight),
+            # Thermal FWHM^2 (km2/s2; shape: clouds)
+            fwhm2_thermal = pm.Deterministic(
+                "fwhm2_thermal",
+                physics.calc_thermal_fwhm2(10.0**log10_Tkin, self.mol_weight),
                 dims="cloud",
             )
 
-            # Non-thermal FWHM (km/s; shape: clouds)
-            fwhm_nonthermal = pm.Deterministic(
-                "fwhm_nonthermal",
-                physics.calc_nonthermal_fwhm(
+            # Non-thermal FWHM^2 (km2/s2; shape: clouds)
+            fwhm2_nonthermal = pm.Deterministic(
+                "fwhm2_nonthermal",
+                physics.calc_nonthermal_fwhm2(
                     10.0**log10_depth, 10.0**log10_nth_fwhm_1pc, depth_nth_fwhm_power
                 ),
                 dims="cloud",
             )
 
-            # FWHM (km/s; shape: clouds)
+            # FWHM^2 (km2/s2; shape: clouds)
             _ = pm.Deterministic(
-                "fwhm", pt.sqrt(fwhm_thermal**2.0 + fwhm_nonthermal**2.0), dims="cloud"
+                "fwhm2", fwhm2_thermal + fwhm2_nonthermal, dims="cloud"
             )
+            
+            # Spectral rms (K)
+            rms_observation_norm = pm.HalfNormal("rms_observation_norm", sigma=1.0)
+            _ = pm.Deterministic("rms_observation", rms_observation_norm * prior_rms)
 
     def add_likelihood(self):
-        """Add likelihood to the model. SpecData key must be "observation"."""
+        """Add likelihood to the model. SpecData key must be "observation" and contain
+        brightness temperarture data."""
         # Predict optical depth spectrum (shape: spectral, components, clouds)
-        cloud_tex = 10.0 ** self.model["log10_tex"]
+        # LTE assumption: Tkin = Tex
+        cloud_tex = 10.0 ** self.model["log10_Tkin"]
         component_tex = cloud_tex[None, :]
         tau = physics.predict_tau(
             self.mol_data,
             self.data["observation"].spectral,
             self.model["log10_N"],
             self.model["velocity"],
-            self.model["fwhm"],
+            self.model["fwhm2"],
             cloud_tex,
             component_tex,
         )
@@ -260,6 +256,6 @@ class HFSModel(BaseModel):
             _ = pm.Normal(
                 "observation",
                 mu=predicted,
-                sigma=self.data["observation"].noise,
+                sigma=self.model["rms_observation"],
                 observed=self.data["observation"].brightness,
             )
