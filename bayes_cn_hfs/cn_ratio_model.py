@@ -61,10 +61,13 @@ class CNRatioModel(BaseModel):
                 rot_state_lower=0,  # lower rotational state
             )
 
+        # Molecular weights
+        self.mol_weight_12CN = 26.0
+        self.mol_weight_13CN = 27.0
+
         # Select features used for posterior clustering
         self._cluster_features += [
             "log10_N_12CN",
-            "log10_tex",
             "fwhm",
             "velocity",
         ]
@@ -73,12 +76,19 @@ class CNRatioModel(BaseModel):
         self.var_name_map.update(
             {
                 "log10_N_12CN": r"log$_{10}$ $N_{\rm CN}$ (cm$^{-2}$)",
+                "log10_N": r"log$_{10}$ $N$ (cm$^{-2}$)",
                 "log10_tex": r"log$_{10}$ $T_{\rm ex}$ (K)",
-                "fwhm": r"$\Delta V$ (km s$^{-1}$)",
+                "log10_depth": r"log$_{10}$ $d$ (pc)",
+                "log10_Tkin": r"$\log_{10} T_{\rm kin}$ (K)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
                 "ratio_13C_12C": r"$^{13}{\rm C}/^{12}{\rm C}$",
-                "rms_12CN": r"rms$_{\rm CN}$ (K)",
-                "rms_13CN": r"rms$_{^{13}{\rm CN}}$ (K)",
+                "log10_nth_fwhm_1pc": r"log$_{10}$ $\Delta V_{\rm 1 pc}$ (km s$^{-1}$)",
+                "depth_nth_fwhm_power": r"$\alpha$",
+                "fwhm_thermal_12CN": r"$\Delta V_{^{12}\rm CN, th}$ (km s$^{-1}$)",
+                "fwhm_thermal_13CN": r"$\Delta V_{^{13}\rm CN, th}$ (km s$^{-1}$)",
+                "fwhm_nonthermal": r"$\Delta V_{\rm nth}$ (km s$^{-1}$)",
+                "fwhm_12CN": r"$\Delta V_{^{12}\rm CN}$ (km s$^{-1}$)",
+                "fwhm_13CN": r"$\Delta V_{^{13}\rm CN}$ (km s$^{-1}$)",
             }
         )
 
@@ -86,11 +96,12 @@ class CNRatioModel(BaseModel):
         self,
         prior_log10_N_12CN: Iterable[float] = [14.0, 1.0],
         prior_log10_tex: Iterable[float] = [1.0, 0.1],
-        prior_fwhm: float = 1.0,
+        prior_log10_depth: Iterable[float] = [0.0, 0.25],
+        prior_log10_Tkin: Iterable[float] = [2.0, 1.0],
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_ratio_13C_12C: float = 0.01,
-        prior_rms_12CN: float = 0.01,
-        prior_rms_13CN: float = 0.01,
+        prior_log10_nth_fwhm_1pc: Iterable[float] = [0.2, 0.1],
+        prior_depth_nth_fwhm_power: Iterable[float] = [0.4, 0.1],
         prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
         ordered: bool = False,
     ):
@@ -104,21 +115,18 @@ class CNRatioModel(BaseModel):
         prior_log10_tex : Iterable[float], optional
             Prior distribution on log10 excitation temperature (K), by default [1.0, 0.1], where
             log10_tex ~ Normal(mu=prior[0], sigma=prior[1])
-        prior_fwhm : float, optional
-            Prior distribution on FWHM line width (km s-1), by default 1.0, where
-            fwhm ~ Gamma(alpha=2.0, beta=1.0/prior)
+        prior_log10_depth : Iterable[float], optional
+            Prior distribution on log10 depth (pc), by default [0.0, 0.25], where
+            log10_depth ~ Normal(mu=prior[0], sigma=prior[1])
+        prior_log10_Tkin : Iterable[float], optional
+            Prior distribution on log10 kinetic temperature (K), by default [2.0, 1.0], where
+            log10_Tkin ~ Normal(mu=prior[0], sigma=prior[1])
         prior_velocity : Iterable[float], optional
             Prior distribution on centroid velocity (km s-1), by default [0.0, 10.0], where
             velocity ~ Normal(mu=prior[0], sigma=prior[1])
         prior_ratio_13C_12C : float, optional
             Prior distribution on 13C/12C ratio, by default 0.01, where
-            ratio_13C_12C ~ HalfNormal(sigma=prior)
-        prior_rms_12CN : float, optional
-            Prior distribution on 12CN spectral rms (K), by default 0.01, where
-            rms ~ HalfNormal(sigma=prior)
-        prior_rms_13CN : float, optional
-            Prior distribution on 13CN spectral rms (K), by default 0.01, where
-            rms ~ HalfNormal(sigma=prior)
+            ratio_13C_12C ~ Gamma(alpha=2, beta=1/prior)
         prior_baseline_coeffs : Optional[dict[str, Iterable[float]]], optional
             Width of normal prior distribution on the normalized baseline polynomial coefficients.
             Keys are dataset names and values are lists of length `baseline_degree+1`. If None, use
@@ -133,7 +141,9 @@ class CNRatioModel(BaseModel):
 
         with self.model:
             # 12CN upper level column density (cm-2; shape: clouds)
-            log10_N_12CN_norm = pm.Normal("log10_N_12CN_norm", mu=0.0, sigma=1.0, dims="cloud")
+            log10_N_12CN_norm = pm.Normal(
+                "log10_N_12CN_norm", mu=0.0, sigma=1.0, dims="cloud"
+            )
             _ = pm.Deterministic(
                 "log10_N_12CN",
                 prior_log10_N_12CN[0] + prior_log10_N_12CN[1] * log10_N_12CN_norm,
@@ -141,20 +151,40 @@ class CNRatioModel(BaseModel):
             )
 
             # gas excitation temperature (K; shape: clouds)
-            log10_tex_norm = pm.Normal("log10_tex_norm", mu=0.0, sigma=1.0, dims="cloud")
+            log10_tex_norm = pm.Normal(
+                "log10_tex_norm", mu=0.0, sigma=1.0, dims="cloud"
+            )
             _ = pm.Deterministic(
                 "log10_tex",
                 prior_log10_tex[0] + prior_log10_tex[1] * log10_tex_norm,
                 dims="cloud",
             )
 
-            # line width (km/s; shape: clouds)
-            fwhm_norm = pm.HalfNormal("fwhm_norm", sigma=1.0, dims="cloud")
-            _ = pm.Deterministic("fwhm", prior_fwhm * fwhm_norm, dims="cloud")
+            # depth (pc; shape: clouds)
+            log10_depth_norm = pm.Normal(
+                "log10_depth_norm", mu=0.0, sigma=1.0, dims="cloud"
+            )
+            log10_depth = pm.Deterministic(
+                "log10_depth",
+                prior_log10_depth[0] + prior_log10_depth[1] * log10_depth_norm,
+                dims="cloud",
+            )
+
+            # kinetic temperature (K; shape: clouds)
+            log10_Tkin_norm = pm.Normal(
+                "log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud"
+            )
+            log10_Tkin = pm.Deterministic(
+                "log10_Tkin",
+                prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
+                dims="cloud",
+            )
 
             # Velocity (km/s; shape: clouds)
             if ordered:
-                velocity_offset_norm = pm.Gamma("velocity_norm", alpha=2.0, beta=1.0, dims="cloud")
+                velocity_offset_norm = pm.Gamma(
+                    "velocity_norm", alpha=2.0, beta=1.0, dims="cloud"
+                )
                 velocity_offset = velocity_offset_norm * prior_velocity[1]
                 _ = pm.Deterministic(
                     "velocity",
@@ -175,21 +205,72 @@ class CNRatioModel(BaseModel):
                 )
 
             # 13C/12C ratio
-            ratio_13C_12C_norm = pm.HalfNormal("ratio_13C_12C_norm", sigma=1.0, dims="cloud")
-            _ = pm.Deterministic("ratio_13C_12C", prior_ratio_13C_12C * ratio_13C_12C_norm, dims="cloud")
+            ratio_13C_12C_norm = pm.Gamma(
+                "ratio_13C_12C_norm", alpha=2.0, beta=1.0, dims="cloud"
+            )
+            _ = pm.Deterministic(
+                "ratio_13C_12C", prior_ratio_13C_12C * ratio_13C_12C_norm, dims="cloud"
+            )
 
-            # Spectral rms (K)
-            labels = ["12CN", "13CN"]
-            prior_rmss = [prior_rms_12CN, prior_rms_13CN]
-            for label, prior_rms in zip(labels, prior_rmss):
-                # Spectral rms (K)
-                rms_norm = pm.HalfNormal(f"rms_{label}_norm", sigma=1.0)
-                _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
+            # Non-thermal FWHM at 1 pc (km s-1; shape: clouds)
+            log10_nth_fwhm_1pc_norm = pm.Normal(
+                "log10_nth_fwhm_1pc_norm", mu=0.0, sigma=1.0
+            )
+            log10_nth_fwhm_1pc = pm.Deterministic(
+                "log10_nth_fwhm_1pc",
+                prior_log10_nth_fwhm_1pc[0]
+                + prior_log10_nth_fwhm_1pc[1] * log10_nth_fwhm_1pc_norm,
+            )
+
+            # Non-thermal FWHM vs. depth power law index (shape: clouds)
+            depth_nth_fwhm_power_norm = pm.Normal(
+                "depth_nth_fwhm_power_norm", mu=0.0, sigma=1.0
+            )
+            depth_nth_fwhm_power = pm.Deterministic(
+                "depth_nth_fwhm_power",
+                prior_depth_nth_fwhm_power[0]
+                + prior_depth_nth_fwhm_power[1] * depth_nth_fwhm_power_norm,
+            )
+
+            # Thermal FWHM (km/s; shape: clouds)
+            fwhm_thermal_12CN = pm.Deterministic(
+                "fwhm_thermal_12CN",
+                physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_12CN),
+                dims="cloud",
+            )
+            fwhm_thermal_13CN = pm.Deterministic(
+                "fwhm_thermal_13CN",
+                physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_13CN),
+                dims="cloud",
+            )
+
+            # Non-thermal FWHM (km/s; shape: clouds)
+            fwhm_nonthermal = pm.Deterministic(
+                "fwhm_nonthermal",
+                physics.calc_nonthermal_fwhm(
+                    10.0**log10_depth, 10.0**log10_nth_fwhm_1pc, depth_nth_fwhm_power
+                ),
+                dims="cloud",
+            )
+
+            # FWHM (km/s; shape: clouds)
+            _ = pm.Deterministic(
+                "fwhm_12CN",
+                pt.sqrt(fwhm_thermal_12CN**2.0 + fwhm_nonthermal**2.0),
+                dims="cloud",
+            )
+            _ = pm.Deterministic(
+                "fwhm_13CN",
+                pt.sqrt(fwhm_thermal_13CN**2.0 + fwhm_nonthermal**2.0),
+                dims="cloud",
+            )
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "12CN" and "13CN"."""
         # 13CN column density (cm-2; shape: clouds)
-        log10_N_13CN = self.model["log10_N_12CN"] + pt.log10(self.model["ratio_13C_12C"])
+        log10_N_13CN = self.model["log10_N_12CN"] + pt.log10(
+            self.model["ratio_13C_12C"]
+        )
 
         # Predict baseline models
         baseline_models = self.predict_baseline()
@@ -198,7 +279,8 @@ class CNRatioModel(BaseModel):
         labels = ["12CN", "13CN"]
         mol_datas = [self.mol_data_12CN, self.mol_data_13CN]
         log10_Ns = [self.model["log10_N_12CN"], log10_N_13CN]
-        for label, mol_data, log10_N in zip(labels, mol_datas, log10_Ns):
+        fwhms = [self.model["fwhm_12CN"], self.model["fwhm_13CN"]]
+        for label, mol_data, log10_N, fwhm in zip(labels, mol_datas, log10_Ns, fwhms):
             # Predict optical depth spectrum, sum over components (shape: spectral, components, clouds)
             cloud_tex = 10.0 ** self.model["log10_tex"]
             component_tex = cloud_tex[None, :]
@@ -207,7 +289,7 @@ class CNRatioModel(BaseModel):
                 self.data[label].spectral,
                 log10_N,
                 self.model["velocity"],
-                self.model["fwhm"],
+                fwhm,
                 cloud_tex,
                 component_tex,
             )
@@ -228,6 +310,6 @@ class CNRatioModel(BaseModel):
                 _ = pm.Normal(
                     label,
                     mu=predicted,
-                    sigma=self.model[f"rms_{label}"],
+                    sigma=self.data[label].noise,
                     observed=self.data[label].brightness,
                 )

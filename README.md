@@ -19,6 +19,7 @@ A Bayesian CN Hyperfine Spectral Model
   - [`CNRatioModel`](#cnratiomodel)
   - [`CNRatioAnomalyModel`](#cnratioanomalymodel)
   - [`ordered`](#ordered)
+- [Analysis](#analysis)
 - [Syntax \& Examples](#syntax--examples)
 - [Issues and Contributing](#issues-and-contributing)
 - [License and Copyright](#license-and-copyright)
@@ -76,7 +77,6 @@ The basic model is `HFSModel`, a general purpose model for modelling any hyperfi
 
 | Hyper Parameter<br>`variable` | Parameter                                   | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
 | :---------------------------- | :------------------------------------------ | :---- | :------------------------------------------------------- | :---------------------------- |
-| `rms`                         | Spectral rms noise                          | `K`   | ${\rm rms} \sim {\rm HalfNormal}(\sigma=p)$              | `0.01`                        |
 | `baseline_coeffs`             | Normalized polynomial baseline coefficients | ``    | $\beta_i \sim {\rm Normal}(\mu=0.0, \sigma=p_i)$         | `[1.0]*baseline_degree`       |
 
 ## `HFSAnomalyModel`
@@ -105,8 +105,6 @@ The basic model is `HFSModel`, a general purpose model for modelling any hyperfi
 
 | Hyper Parameter<br>`variable` | Parameter                                   | Units | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
 | :---------------------------- | :------------------------------------------ | :---- | :------------------------------------------------------- | :---------------------------- |
-| `rms_12CN`                    | ${\rm CN}$ spectral rms noise               | `K`   | ${\rm rms} \sim {\rm HalfNormal}(\sigma=p)$              | `0.01`                        |
-| `rms_13CN`                    | $^{13}{\rm CN}$ spectral rms noise          | `K`   | ${\rm rms} \sim {\rm HalfNormal}(\sigma=p)$              | `0.01`                        |
 | `baseline_coeffs`             | Normalized polynomial baseline coefficients | ``    | $\beta_i \sim {\rm Normal}(\mu=0.0, \sigma=p_i)$         | `[1.0]*baseline_degree`       |
 
 ## `CNRatioAnomalyModel`
@@ -129,6 +127,10 @@ If we assume that the emission is optically thin, then we can set `ordered=True`
 | :---------------------------- | :-------------------------------------- | :------- | :------------------------------------------------------------------- | :---------------------------- |
 | `velocity`                    | Velocity (same reference frame as data) | `km s-1` | $V_i \sim p_0 + \sum_0^{i-1} V_i + {\rm Gamma}(\alpha=2, \beta=p_1)$ | `[0.0, 10.0]`                 |
 
+# Analysis
+
+The `analysis/` directory contains various scripts for analyzing real data.
+
 # Syntax & Examples
 
 See the various tutorial notebooks under [docs/source/notebooks](https://github.com/tvwenger/bayes_cn_hfs/tree/main/docs/source/notebooks). Tutorials and the full API are available here: https://bayes-cn-hfs.readthedocs.io.
@@ -140,19 +142,6 @@ of this software via [Github](https://github.com/tvwenger/bayes_cn_hfs).
 
 # License and Copyright
 
-Copyright (c) 2024 Trey Wenger
-
-GNU General Public License v3 (GNU GPLv3)
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published
-by the Free Software Foundation, either version 3 of the License,
-or (at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
+Copyright(C) 2024 by
+Trey V. Wenger; tvwenger@gmail.com
+This code is licensed under MIT license (see LICENSE for details)

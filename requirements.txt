@@ -1,3 +1,4 @@
 astropy
 astroquery
+spectral-cube
 bayes_spec>=1.7.2

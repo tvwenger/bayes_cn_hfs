@@ -28,6 +28,7 @@ dependencies:
   - numpyro
   - astropy
   - astroquery
+  - spectral-cube
   - pip
   - pip:
     - "sphinx_rtd_theme"

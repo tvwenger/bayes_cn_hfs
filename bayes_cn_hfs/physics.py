@@ -63,6 +63,47 @@ def calc_fwhm_freq(
     return mol_data["freq"][:, None] * fwhm / _C
 
 
+def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
+    """Calculate the thermal line broadening assuming a Maxwellian velocity distribution
+    (Condon & Ransom eq. 7.35)
+
+    Parameters
+    ----------
+    kinetic_temp : float
+        Kinetic temperature (K)
+    weight : float
+        Molecular weight (number of protons)
+
+    Returns
+    -------
+    float
+        Thermal FWHM line width (km s-1)
+    """
+    # constant = sqrt(8*ln(2)*k_B/m_p)
+    const = 0.21394418  # km/s K-1/2
+    return const * pt.sqrt(kinetic_temp / weight)
+
+
+def calc_nonthermal_fwhm(depth: float, nth_fwhm_1pc: float, depth_nth_fwhm_power: float) -> float:
+    """Calculate the non-thermal line broadening assuming a power-law size-linewidth relationship.
+
+    Parameters
+    ----------
+    depth : float
+        Line-of-sight depth (pc)
+    nth_fwhm_1pc : float
+        Non-thermal broadening at 1 pc (km s-1)
+    depth_nth_fwhm_power : float
+        Power law index
+
+    Returns
+    -------
+    float
+        Non-thermal FWHM line width (km s-1)
+    """
+    return nth_fwhm_1pc * depth**depth_nth_fwhm_power
+
+
 def calc_line_profile(freq_axis: Iterable[float], frequency: Iterable[float], fwhm: Iterable[float]) -> Iterable[float]:
     """Evaluate the Gaussian line profile, ensuring normalization.
 

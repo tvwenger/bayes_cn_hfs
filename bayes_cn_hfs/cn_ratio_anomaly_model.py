@@ -31,45 +31,61 @@ class CNRatioAnomalyModel(CNRatioModel):
         # Define TeX representation of each parameter
         self.var_name_map.update(
             {
-                "tex_12CN": r"$T_{\rm ex, CN}$ (K)",
+                "log10_tex_12CN_anomaly": r"$\sigma_{\log_{10} T_{^{12}\rm CN, ex}}$",
+                "log10_tex_12CN_comp": r"$\log_{10} T_{^{12}\rm CN, ex}$ (K)",
             }
         )
 
     def add_priors(
         self,
         *args,
-        prior_tex_12CN_anomaly: float = 1.0,
+        prior_log10_tex_12CN_anomaly: float = 0.1,
         **kwargs,
     ):
         """Add priors and deterministics to the model
 
         Parameters
         ----------
-        prior_tex_12CN_anomaly : float, optional
+        prior_log10_tex_12CN_anomaly : float, optional
             Prior distribution on the 12CN excitation temperature anomaly (K), by default 1.0, where
-            tex_12CN_anomaly ~ Normal(mu=0.0, sigma=prior)
+            log10_tex_12CN_anomaly ~ HalfNormal(sigma=prior) and
+            log10_tex_12CN_comp ~ Normal(mu=log10_tex, sigma=log10_tex_12CN_anomaly)
+
         """
         # add CNRatioModel priors
         super().add_priors(*args, **kwargs)
 
         with self.model:
-            # Excitation temperature anomaly (shape: components, clouds)
-            tex_12CN_anomaly_norm = pm.Normal(
-                "tex_12CN_anomaly_norm", mu=0.0, sigma=1.0, dims=["component_12CN", "cloud"]
+            # Excitation temperature anomaly (shape: clouds)
+            log10_tex_12CN_anomaly_norm = pm.HalfNormal(
+                "log10_tex_12CN_anomaly_norm", sigma=1.0, dims="cloud"
             )
-            tex_12CN_anomaly = pm.Deterministic(
-                "tex_12CN_anomaly", prior_tex_12CN_anomaly * tex_12CN_anomaly_norm, dims=["component_12CN", "cloud"]
+            log10_tex_12CN_anomaly = pm.Deterministic(
+                "log10_tex_12CN_anomaly",
+                prior_log10_tex_12CN_anomaly * log10_tex_12CN_anomaly_norm,
+                dims="cloud",
             )
 
             # Excitation temperature (shape: components, clouds)
+            log10_tex_12CN_comp_norm = pm.Normal(
+                "log10_tex_12CN_comp_norm",
+                mu=0.0,
+                sigma=1.0,
+                dims=["component_12CN", "cloud"],
+            )
             _ = pm.Deterministic(
-                "tex_12CN", 10.0 ** self.model["log10_tex"] + tex_12CN_anomaly, dims=["component_12CN", "cloud"]
+                "log10_tex_12CN_comp",
+                self.model["log10_tex"]
+                + log10_tex_12CN_anomaly * log10_tex_12CN_comp_norm,
+                dims=["component_12CN", "cloud"],
             )
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "12CN" and "13CN"."""
         # 13CN column density (cm-2; shape: clouds)
-        log10_N_13CN = self.model["log10_N_12CN"] + pt.log10(self.model["ratio_13C_12C"])
+        log10_N_13CN = self.model["log10_N_12CN"] + pt.log10(
+            self.model["ratio_13C_12C"]
+        )
 
         # Predict baseline models
         baseline_models = self.predict_baseline()
@@ -78,18 +94,22 @@ class CNRatioAnomalyModel(CNRatioModel):
         labels = ["12CN", "13CN"]
         mol_datas = [self.mol_data_12CN, self.mol_data_13CN]
         log10_Ns = [self.model["log10_N_12CN"], log10_N_13CN]
-        for label, mol_data, log10_N in zip(labels, mol_datas, log10_Ns):
+        fwhms = [self.model["fwhm_12CN"], self.model["fwhm_13CN"]]
+        component_texs = [
+            10.0 ** self.model["log10_tex_12CN_comp"],
+            10.0 ** self.model["log10_tex"][None, :],
+        ]
+        for label, mol_data, log10_N, fwhm, component_tex in zip(
+            labels, mol_datas, log10_Ns, fwhms, component_texs
+        ):
             # Predict optical depth spectrum (shape: spectral, components, clouds)
             cloud_tex = 10.0 ** self.model["log10_tex"]
-            component_tex = cloud_tex[None, :]
-            if label == "12CN":
-                component_tex = self.model["tex_12CN"]
             tau = physics.predict_tau(
                 mol_data,
                 self.data[label].spectral,
                 log10_N,
                 self.model["velocity"],
-                self.model["fwhm"],
+                fwhm,
                 cloud_tex,
                 component_tex,
             )
@@ -110,6 +130,6 @@ class CNRatioAnomalyModel(CNRatioModel):
                 _ = pm.Normal(
                     label,
                     mu=predicted,
-                    sigma=self.model[f"rms_{label}"],
+                    sigma=self.data[label].noise,
                     observed=self.data[label].brightness,
                 )
