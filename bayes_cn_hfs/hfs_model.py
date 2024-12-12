@@ -10,6 +10,7 @@ This code is licensed under MIT license (see LICENSE for details)
 from typing import Iterable, Optional
 
 import pymc as pm
+import numpy as np
 
 from bayes_spec import BaseModel
 
@@ -33,13 +34,23 @@ class HFSModel(BaseModel):
         super().__init__(*args, **kwargs)
 
         # Save inputs
-        self.mol_data = mol_data
+        self.mol_data = mol_data.copy()
         self.bg_temp = bg_temp
+
+        # Drop un-observed components
+        drop = np.ones(len(self.mol_data["freq"]), dtype=bool)
+        for dataset in self.data.values():
+            for i, freq in enumerate(self.mol_data["freq"]):
+                if dataset.spectral.min() <= freq <= dataset.spectral.max():
+                    drop[i] = False
+        print("Dropping the un-observed transitions at the following frequencies (MHz):")
+        print(self.mol_data["freq"][drop])
+        for key in ["freq", "Aul", "degu", "Eu", "relative_int"]:
+            self.mol_data[key] = self.mol_data[key][~drop]
 
         # Select features used for posterior clustering
         self._cluster_features += [
             "log10_N",
-            "log10_tex",
             "fwhm",
             "velocity",
         ]
@@ -51,7 +62,6 @@ class HFSModel(BaseModel):
                 "log10_tex": r"log$_{10}$ $T_{\rm ex}$ (K)",
                 "fwhm": r"$\Delta V$ (km s$^{-1}$)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
-                "rms_observation": r"rms (K)",
             }
         )
 
@@ -61,7 +71,7 @@ class HFSModel(BaseModel):
         prior_log10_tex: Iterable[float] = [1.0, 0.1],
         prior_fwhm: float = 1.0,
         prior_velocity: Iterable[float] = [0.0, 10.0],
-        prior_rms: float = 0.01,
+        prior_rms: Optional[float] = None,
         prior_baseline_coeffs: Optional[Iterable[float]] = None,
         ordered: bool = False,
     ):
@@ -81,17 +91,19 @@ class HFSModel(BaseModel):
         prior_velocity : Iterable[float], optional
             Prior distribution on centroid velocity (km s-1), by default [0.0, 10.0], where
             velocity ~ Normal(mu=prior[0], sigma=prior[1])
-        prior_rms : float, optional
-            Prior distribution on spectral rms (K), by default 0.01, where
+        prior_rms : Optional[float], optional
+            Prior distribution on spectral rms (K), by default None, where
             rms ~ HalfNormal(sigma=prior)
+            If None, then the spectral rms is taken from the data and not inferred.
         prior_baseline_coeffs : Optional[Iterable[float]], optional
             Width of normal prior distribution on the normalized baseline polynomial coefficients.
             Must be a list of length `baseline_degree+1`. If None, use `[1.0]*(baseline_degree+1)`,
             by default None
         ordered : bool, optional
-            If True, assume ordered velocities (optically thin assumption), by default False. If True, the prior
-            distribution on the velocity becomes
-            velocity(cloud = n) ~ prior[0] + sum_i(velocity[i < n]) + Gamma(alpha=2.0, beta=1.0/prior[1])
+            If True, assume ordered velocities (optically thin assumption), by default False.
+            If True, the prior distribution on the velocity becomes
+            velocity(cloud = n) ~
+                prior[0] + sum_i(velocity[i < n]) + Gamma(alpha=2.0, beta=1.0/prior[1])
         """
         if prior_baseline_coeffs is not None:
             prior_baseline_coeffs = {"observation": prior_baseline_coeffs}
@@ -143,8 +155,9 @@ class HFSModel(BaseModel):
                 )
 
             # Spectral rms (K)
-            rms_observation_norm = pm.HalfNormal("rms_observation_norm", sigma=1.0)
-            _ = pm.Deterministic("rms_observation", rms_observation_norm * prior_rms)
+            if prior_rms is not None:
+                rms_observation_norm = pm.HalfNormal("rms_observation_norm", sigma=1.0)
+                _ = pm.Deterministic("rms_observation", rms_observation_norm * prior_rms)
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""
@@ -178,6 +191,8 @@ class HFSModel(BaseModel):
             _ = pm.Normal(
                 "observation",
                 mu=predicted,
-                sigma=self.model["rms_observation"],
+                sigma=(
+                    self.model["rms_observation"] if "rms_observation" in self.model else self.data["observation"].noise
+                ),
                 observed=self.data["observation"].brightness,
             )

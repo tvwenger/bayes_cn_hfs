@@ -2,15 +2,19 @@ __all__ = [
     "get_molecule_data",
     "HFSModel",
     "HFSAnomalyModel",
+    "HFSAnomalyIRAMModel",
     "CNRatioModel",
     "CNRatioAnomalyModel",
+    "CNRatioAnomalyIRAMModel",
 ]
 
 from bayes_cn_hfs.utils import get_molecule_data
 from bayes_cn_hfs.hfs_model import HFSModel
 from bayes_cn_hfs.hfs_anomaly_model import HFSAnomalyModel
+from bayes_cn_hfs.hfs_anomaly_iram_model import HFSAnomalyIRAMModel
 from bayes_cn_hfs.cn_ratio_model import CNRatioModel
 from bayes_cn_hfs.cn_ratio_anomaly_model import CNRatioAnomalyModel
+from bayes_cn_hfs.cn_ratio_anomaly_iram_model import CNRatioAnomalyIRAMModel
 
 from . import _version
 

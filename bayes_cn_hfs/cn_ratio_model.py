@@ -9,6 +9,7 @@ This code is licensed under MIT license (see LICENSE for details)
 
 from typing import Iterable, Optional
 
+import numpy as np
 import pymc as pm
 import pytensor.tensor as pt
 
@@ -47,24 +48,46 @@ class CNRatioModel(BaseModel):
 
         # Save inputs
         self.bg_temp = bg_temp
-        self.mol_data_12CN = mol_data_12CN
         if mol_data_12CN is None:
             self.mol_data_12CN = get_molecule_data(
                 "CN, v = 0, 1",  # molecule name in JPLSpec
                 vibrational_state=0,  # vibrational state number
                 rot_state_lower=0,  # lower rotational state
             )
-        self.mol_data_13CN = mol_data_13CN
+        else:
+            self.mol_data_12CN = mol_data_12CN.copy()
         if mol_data_13CN is None:
             self.mol_data_13CN = get_molecule_data(
                 "C-13-N",  # molecule name in JPLSpec
                 rot_state_lower=0,  # lower rotational state
             )
+        else:
+            self.mol_data_13CN = mol_data_13CN.copy()
+
+        # Drop un-observed components
+        drop_12CN = np.ones(len(self.mol_data_12CN["freq"]), dtype=bool)
+        for dataset in self.data.values():
+            for i, freq in enumerate(self.mol_data_12CN["freq"]):
+                if dataset.spectral.min() <= freq <= dataset.spectral.max():
+                    drop_12CN[i] = False
+        print("Dropping the un-observed 12CN transitions at the following frequencies (MHz):")
+        print(self.mol_data_12CN["freq"][drop_12CN])
+        for key in ["freq", "Aul", "degu", "Eu", "relative_int"]:
+            self.mol_data_12CN[key] = self.mol_data_12CN[key][~drop_12CN]
+
+        drop_13CN = np.ones(len(self.mol_data_13CN["freq"]), dtype=bool)
+        for dataset in self.data.values():
+            for i, freq in enumerate(self.mol_data_13CN["freq"]):
+                if dataset.spectral.min() <= freq <= dataset.spectral.max():
+                    drop_13CN[i] = False
+        print("Dropping the un-observed 13CN transitions at the following frequencies (MHz):")
+        print(self.mol_data_13CN["freq"][drop_13CN])
+        for key in ["freq", "Aul", "degu", "Eu", "relative_int"]:
+            self.mol_data_13CN[key] = self.mol_data_13CN[key][~drop_13CN]
 
         # Select features used for posterior clustering
         self._cluster_features += [
             "log10_N_12CN",
-            "log10_tex",
             "fwhm",
             "velocity",
         ]
@@ -77,8 +100,6 @@ class CNRatioModel(BaseModel):
                 "fwhm": r"$\Delta V$ (km s$^{-1}$)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
                 "ratio_13C_12C": r"$^{13}{\rm C}/^{12}{\rm C}$",
-                "rms_12CN": r"rms$_{\rm CN}$ (K)",
-                "rms_13CN": r"rms$_{^{13}{\rm CN}}$ (K)",
             }
         )
 
@@ -89,8 +110,6 @@ class CNRatioModel(BaseModel):
         prior_fwhm: float = 1.0,
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_ratio_13C_12C: float = 0.01,
-        prior_rms_12CN: float = 0.01,
-        prior_rms_13CN: float = 0.01,
         prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
         ordered: bool = False,
     ):
@@ -112,13 +131,7 @@ class CNRatioModel(BaseModel):
             velocity ~ Normal(mu=prior[0], sigma=prior[1])
         prior_ratio_13C_12C : float, optional
             Prior distribution on 13C/12C ratio, by default 0.01, where
-            ratio_13C_12C ~ HalfNormal(sigma=prior)
-        prior_rms_12CN : float, optional
-            Prior distribution on 12CN spectral rms (K), by default 0.01, where
-            rms ~ HalfNormal(sigma=prior)
-        prior_rms_13CN : float, optional
-            Prior distribution on 13CN spectral rms (K), by default 0.01, where
-            rms ~ HalfNormal(sigma=prior)
+            ratio_13C_12C ~ Gamma(alpha=2, beta=1/prior)
         prior_baseline_coeffs : Optional[dict[str, Iterable[float]]], optional
             Width of normal prior distribution on the normalized baseline polynomial coefficients.
             Keys are dataset names and values are lists of length `baseline_degree+1`. If None, use
@@ -175,16 +188,8 @@ class CNRatioModel(BaseModel):
                 )
 
             # 13C/12C ratio
-            ratio_13C_12C_norm = pm.HalfNormal("ratio_13C_12C_norm", sigma=1.0, dims="cloud")
+            ratio_13C_12C_norm = pm.Gamma("ratio_13C_12C_norm", alpha=2.0, beta=1.0, dims="cloud")
             _ = pm.Deterministic("ratio_13C_12C", prior_ratio_13C_12C * ratio_13C_12C_norm, dims="cloud")
-
-            # Spectral rms (K)
-            labels = ["12CN", "13CN"]
-            prior_rmss = [prior_rms_12CN, prior_rms_13CN]
-            for label, prior_rms in zip(labels, prior_rmss):
-                # Spectral rms (K)
-                rms_norm = pm.HalfNormal(f"rms_{label}_norm", sigma=1.0)
-                _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "12CN" and "13CN"."""
@@ -228,6 +233,6 @@ class CNRatioModel(BaseModel):
                 _ = pm.Normal(
                     label,
                     mu=predicted,
-                    sigma=self.model[f"rms_{label}"],
+                    sigma=self.data[label].noise,
                     observed=self.data[label].brightness,
                 )

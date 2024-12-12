@@ -30,42 +30,53 @@ class HFSAnomalyModel(HFSModel):
         # Define TeX representation of each parameter
         self.var_name_map.update(
             {
-                "tex": r"$T_{\rm ex}$ (K)",
+                "log10_tex_anomaly": r"$\sigma_{\log_{10} T_{\rm ex}}$",
+                "log10_tex_comp": r"$\log_{10} T_{\rm ex}$ (K)",
             }
         )
 
     def add_priors(
         self,
         *args,
-        prior_tex_anomaly: float = 1.0,
+        prior_log10_tex_anomaly: float = 0.1,
         **kwargs,
     ):
         """Add priors and deterministics to the model
 
         Parameters
         ----------
-        prior_tex_anomaly : float, optional
-            Prior distribution on the excitation temperature anomaly (K), by default 1.0, where
-            tex_anomaly ~ Normal(mu=0.0, sigma=prior)
+        prior_log10_tex_anomaly : float, optional
+            Prior distribution on the excitation temperature anomaly (K), by default 0.1, where
+            log10_tex_comp ~ Normal(mu=log10_tex, sigma=prior)
         """
         # add HFSModel priors
         super().add_priors(*args, **kwargs)
 
         with self.model:
-            # Excitation temperature anomaly (shape: components, clouds)
-            tex_anomaly_norm = pm.Normal("tex_anomaly_norm", mu=0.0, sigma=1.0, dims=["component", "cloud"])
-            tex_anomaly = pm.Deterministic(
-                "tex_anomaly", prior_tex_anomaly * tex_anomaly_norm, dims=["component", "cloud"]
+            # Anomaly per cloud (K; shape: clouds)
+            log10_tex_anomaly_norm = pm.HalfNormal("log10_tex_anomaly_norm", sigma=1.0, dims="cloud")
+            log10_tex_anomaly = pm.Deterministic(
+                "log10_tex_anomaly", prior_log10_tex_anomaly * log10_tex_anomaly_norm, dims="cloud"
             )
 
-            # Excitation temperature (shape: components, clouds)
-            _ = pm.Deterministic("tex", 10.0 ** self.model["log10_tex"] + tex_anomaly, dims=["component", "cloud"])
+            # Excitation temperature (K; shape: components, clouds)
+            log10_tex_comp_norm = pm.Normal(
+                "log10_tex_comp_norm",
+                mu=0.0,
+                sigma=1.0,
+                dims=["component", "cloud"],
+            )
+            _ = pm.Deterministic(
+                "log10_tex_comp",
+                self.model["log10_tex"] + log10_tex_anomaly * log10_tex_comp_norm,
+                dims=["component", "cloud"],
+            )
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""
         # Predict optical depth spectrum (shape: spectral, components, clouds)
         cloud_tex = 10.0 ** self.model["log10_tex"]
-        component_tex = self.model["tex"]
+        component_tex = 10.0 ** self.model["log10_tex_comp"]
         tau = physics.predict_tau(
             self.mol_data,
             self.data["observation"].spectral,
@@ -92,6 +103,6 @@ class HFSAnomalyModel(HFSModel):
             _ = pm.Normal(
                 "observation",
                 mu=predicted,
-                sigma=self.model["rms_observation"],
+                sigma=self.data["observation"].noise,
                 observed=self.data["observation"].brightness,
             )
