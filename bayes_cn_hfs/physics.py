@@ -14,12 +14,42 @@ import pytensor.tensor as pt
 
 import astropy.constants as c
 
-from bayes_spec.utils import gaussian
-
 _K_B = c.k_B.to("erg K-1").value
 _H = c.h.to("erg MHz-1").value
 _C = c.c.to("km/s").value
 _C_CM_MHZ = c.c.to("cm MHz").value
+
+
+def gaussian(x: float, center: float, fwhm: float) -> float:
+    """Evaluate a normalized Gaussian function
+
+    :param x: Position at which to evaluate
+    :type x: float
+    :param center: Gaussian centroid
+    :type center: float
+    :param fwhm: Gaussian full-width at half-maximum
+    :type fwhm: float
+    :return: Gaussian evaluated at :param:x
+    :rtype: float
+    """
+    return pt.exp(-4.0 * pt.log(2.0) * (x - center) ** 2.0 / fwhm**2.0) * pt.sqrt(
+        4.0 * pt.log(2.0) / (np.pi * fwhm**2.0)
+    )
+
+
+def lorentzian(x: float, center: float, fwhm: float) -> float:
+    """Evaluate a normalized Lorentzian function
+
+    :param x: Position at which to evaluate
+    :type x: float
+    :param center: Centroid
+    :type center: float
+    :param fwhm: Full-width at half-maximum
+    :type fwhm: float
+    :return: Lorentzian evaluated at :param:x
+    :rtype: float
+    """
+    return fwhm / (2.0 * np.pi) / ((x - center) ** 2.0 + (fwhm / 2.0) ** 2.0)
 
 
 def calc_frequency(mol_data: dict, velocity: Iterable[float]) -> Iterable[float]:
@@ -63,8 +93,92 @@ def calc_fwhm_freq(
     return mol_data["freq"][:, None] * fwhm / _C
 
 
-def calc_line_profile(freq_axis: Iterable[float], frequency: Iterable[float], fwhm: Iterable[float]) -> Iterable[float]:
-    """Evaluate the Gaussian line profile, ensuring normalization.
+def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
+    """Calculate the thermal line broadening assuming a Maxwellian velocity distribution
+    (Condon & Ransom eq. 7.35)
+
+    Parameters
+    ----------
+    kinetic_temp : float
+        Kinetic temperature (K)
+    weight : float
+        Molecular weight (number of protons)
+
+    Returns
+    -------
+    float
+        Thermal FWHM line width (km/s)
+    """
+    # constant = sqrt(8*ln(2)*k_B/m_p)
+    const = 0.21394418  # km/s K-1/2
+    return const * pt.sqrt(kinetic_temp / weight)
+
+
+def calc_nonthermal_fwhm(depth: float, nth_fwhm_1pc: float, depth_nth_fwhm_power: float) -> float:
+    """Calculate the non-thermal line broadening assuming a power-law size-linewidth relationship.
+
+    Parameters
+    ----------
+    depth : float
+        Line-of-sight depth (pc)
+    nth_fwhm_1pc : float
+        Non-thermal broadening at 1 pc (km s-1)
+    depth_nth_fwhm_power : float
+        Power law index
+
+    Returns
+    -------
+    float
+        Non-thermal FWHM line width (km/s)
+    """
+    return nth_fwhm_1pc * depth**depth_nth_fwhm_power
+
+
+def calc_log_boltz_factor(freq: float, Tex: float) -> float:
+    """Evaluate the Boltzmann factor from a given excitation temperature.
+
+    Parameters
+    ----------
+    freq : float
+        Frequency (MHz)
+    Tex : float
+        Excitation temperature (K)
+
+    Returns
+    -------
+    float
+        log Boltzmann factor = -h*freq/(k*Tex)
+    """
+    return -_H * freq / (_K_B * Tex)
+
+
+def calc_Tex(freq: float, log_boltz_factor: float) -> float:
+    """Evaluate the excitation temperature from a given Boltzmann factor.
+
+    Parameters
+    ----------
+    freq : float
+        Frequency (MHz)
+    log_boltz_factor : float
+        log Boltzmann factor = -h*freq/(k*Tex)
+
+    Returns
+    -------
+    float
+        Excitation temperature
+    """
+    return -_H * freq / (_K_B * log_boltz_factor)
+
+
+def calc_pseudo_voigt(
+    freq_axis: Iterable[float], frequency: Iterable[float], fwhm: Iterable[float], fwhm_L: float
+) -> Iterable[float]:
+    """Evaluate a pseudo Voight profile in order to aid in posterior exploration
+    of the parameter space. This parameterization includes a latent variable fwhm_L, which
+    can be conditioned on zero to analyze the posterior. We also consider the spectral
+    channelization. We do not perform a full boxcar convolution, rather
+    we approximate the convolution by assuming an equivalent FWHM for the
+    boxcar kernel of 4 ln(2) / pi * channel_width ~= 0.88 * channel_width
 
     Parameters
     ----------
@@ -74,100 +188,59 @@ def calc_line_profile(freq_axis: Iterable[float], frequency: Iterable[float], fw
         Cloud center frequency (MHz length C x N)
     fwhm : Iterable[float]
         Cloud FWHM line widths (MHz length C x N)
+    fwhm_L : float
+        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
 
     Returns
     -------
     Iterable[float]
         Line profile (MHz-1; shape S x C x N)
     """
-    amp = pt.sqrt(4.0 * pt.log(2.0) / (np.pi * fwhm**2.0))
-    profile = gaussian(freq_axis[:, None, None], amp, frequency, fwhm)
-
-    # normalize
     channel_size = pt.abs(freq_axis[1] - freq_axis[0])
-    profile_int = pt.sum(profile, axis=0)
-    norm = pt.switch(pt.lt(profile_int, 1.0e-6), 1.0, profile_int * channel_size)
-    return profile / norm
+    channel_fwhm = 4.0 * pt.log(2.0) * channel_size / np.pi
+    fwhm_conv = pt.sqrt(fwhm**2.0 + channel_fwhm**2.0 + fwhm_L**2.0)
+    fwhm_L_frac = fwhm_L / fwhm_conv
+    eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
 
+    # gaussian component
+    gauss_part = gaussian(freq_axis[:, None, None], frequency, fwhm_conv)
 
-def detailed_balance(mol_data: dict, tex: Iterable[float]) -> Iterable[float]:
-    """Evaluate the state abundance by assuming detailed balance at a constant
-    excitation temperature, from Mangum & Shirley eq. 31.
+    # lorentzian component
+    lorentz_part = lorentzian(freq_axis[:, None, None], frequency, fwhm_conv)
 
-    Parameters
-    ----------
-    mol_data : dict
-        Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of component frequencies
-    tex : Iterable[float]
-        Excitation temperature (K) (length N)
-
-    Returns
-    -------
-    Iterable[float]
-        Fractional abundance (N_u/N_tot) per component (shape C x N)
-    """
-    # evaluate partition function from linear fit
-    part_func = 10.0 ** mol_data["log10_Q_terms"][0] * tex ** mol_data["log10_Q_terms"][1]
-
-    # detailed balance
-    abundance = mol_data["degu"][:, None] / part_func / pt.exp(mol_data["Eu"][:, None] / (_K_B * tex))
-    return abundance
+    # linear combination
+    return eta * lorentz_part + (1.0 - eta) * gauss_part
 
 
 def calc_optical_depth(
-    mol_data: dict,
-    N: Iterable[float],
-    cloud_tex: Iterable[float],
-    component_tex: Iterable[float],
-    line_profile: Iterable[float],
+    tau_total: Iterable[float],
+    tau_weight: Iterable[float],
 ) -> Iterable[float]:
-    """Evaluate the optical depth, from Mangum & Shirley eq. 29, assuming a constant
-    excitation temperature for the detailed balance calculation, but allowing for
-    component-dependent excitation temperatures for the optical depth calculation.
+    """Evaluate the relative optical depth contribution of each transition.
 
     Parameters
     ----------
-    mol_data : dict
-        Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of component frequencies
-    N : Iterable[float]
-        Total column density (cm-2) (length N)
-    cloud_tex : Iterable[float]
-        Mean cloud excitation tempearture (K) (length N)
-    component_tex : Iterable[float]
-        Componenent excitation temperatures (K) (shape C x N)
-    line_profile : Iterable[float]
-        Line profile (MHz-1) (shape S x C x N)
+    tau_total : Iterable[float]
+        Total optical depth (length N)
+    tau_weight : Iterable[float]
+        Optical depth weight per component (length C x N)
 
     Returns
     -------
     Iterable[float]
-        Optical depth spectra (shape S x C x N)
+        Optical depth of each component (shape C x N)
     """
-    # detailed balance to get relative upper state abundances
-    abundance = detailed_balance(mol_data, cloud_tex)
-
-    const = _H * mol_data["freq"][None, :, None] / (_K_B * component_tex)
-    return (
-        _C_CM_MHZ**2.0  # cm2 MHz2
-        / (8.0 * np.pi * mol_data["freq"][None, :, None] ** 2.0)  # MHz-2
-        * (pt.exp(const) - 1.0)
-        * mol_data["Aul"][None, :, None]  # s-1
-        * (line_profile / 1e6)  # Hz-1
-        * N  # cm-2
-        * abundance  # upper state abundance
-    )
+    return tau_total * tau_weight
 
 
 def predict_tau(
     mol_data: dict,
     freq_axis: Iterable[float],
-    log10_N: Iterable[float],
+    tau_total: Iterable[float],
     velocity: Iterable[float],
     fwhm: Iterable[float],
-    cloud_tex: Iterable[float],
-    component_tex: Iterable[float],
+    tau_weight: Iterable[float],
+    fwhm_L: float,
 ) -> Iterable[float]:
     """Predict the optical depth spectra from model parameters.
 
@@ -178,16 +251,16 @@ def predict_tau(
         mol_data['freq'] contains C-length array of component frequencies
     freq_axis : Iterable[float]
         Observed frequency axis (MHz length S)
-    log10_N : Iterable[float]
-        log10 total column density (cm-2) (length N)
+    tau_total : Iterable[float]
+        Total optical depth (length N)
     velocity : Iterable[float]
         Velocity (km s-1) (length N)
     fwhm : Iterable[float]
         FWHM line width (km s-1) (length N)
-    cloud_tex : Iterable[float]
-        Mean cloud excitation tempearture (K) (length N)
-    component_tex : Iterable[float]
-        Componenent excitation temperatures (K) (shape C x N)
+    tau_weight : Iterable[float]
+        Optical depth weight per component (length C x N)
+    fwhm_L : float
+        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
 
     Returns
     -------
@@ -201,17 +274,14 @@ def predict_tau(
     fwhm_freq = calc_fwhm_freq(mol_data, fwhm)
 
     # Line profile (MHz-1; shape: spectral, components, clouds)
-    line_profile = calc_line_profile(freq_axis, frequency, fwhm_freq)
+    line_profile = calc_pseudo_voigt(freq_axis, frequency, fwhm_freq, fwhm_L)
 
-    # Optical depth spectra (shape: spectral, components, clouds)
-    tau = calc_optical_depth(
-        mol_data,
-        10.0**log10_N,
-        cloud_tex,
-        component_tex,
-        line_profile,
-    )
-    return tau
+    # Optical depth contributions (shape: components, clouds)
+    tau = calc_optical_depth(tau_total, tau_weight)
+
+    # Integrate over channels
+    channel_size = pt.abs(freq_axis[1] - freq_axis[0])
+    return tau * line_profile * channel_size
 
 
 def rj_temperature(freq: float, temp: float):
@@ -236,7 +306,7 @@ def rj_temperature(freq: float, temp: float):
 def radiative_transfer(
     freq_axis: Iterable[float],
     tau: Iterable[float],
-    tex: Iterable[float],
+    Tex: Iterable[float],
     bg_temp: float,
 ) -> Iterable[float]:
     """Evaluate the radiative transfer to predict the emission spectrum. The emission
@@ -251,7 +321,7 @@ def radiative_transfer(
     tau : Iterable[float]
         Optical depth spectra (shape S x C x N)
     tex : Iterable[float]
-        Componenent excitation temperatures (K) (shape C x N)
+        Component/cloud excitation temperatures (K) (shape C x N)
     bg_temp : float
         Assumed background temperature
 
@@ -267,7 +337,7 @@ def radiative_transfer(
     # radiative transfer, assuming filling factor = 1.0
     emission_bg = rj_temperature(freq_axis, bg_temp)
     emission_bg_attenuated = emission_bg * pt.exp(-sum_tau[:, -1])
-    emission_components_clouds = rj_temperature(freq_axis[:, None, None], tex) * (1.0 - pt.exp(-tau))
+    emission_components_clouds = rj_temperature(freq_axis[:, None, None], Tex) * (1.0 - pt.exp(-tau))
     # sum over components
     emission_clouds = emission_components_clouds.sum(axis=1)
     emission_clouds_attenuated = emission_clouds * pt.exp(-sum_tau[:, :-1])
