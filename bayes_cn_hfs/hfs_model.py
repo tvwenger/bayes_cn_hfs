@@ -21,7 +21,16 @@ from bayes_cn_hfs import physics
 class HFSModel(BaseModel):
     """Definition of the HFS model. SpecData key must be "observation"."""
 
-    def __init__(self, *args, mol_weight: float = 0.0, mol_data: dict = None, bg_temp: float = 2.7, **kwargs):
+    def __init__(
+        self,
+        *args,
+        mol_weight: float = 0.0,
+        mol_data: dict = None,
+        bg_temp: float = 2.7,
+        Beff: float = 1.0,
+        Feff: float = 1.0,
+        **kwargs,
+    ):
         """Initialize a new HFSModel instance
 
         Parameters
@@ -32,6 +41,10 @@ class HFSModel(BaseModel):
             Dictionary of molecular line data output from utils.get_molecule_data, by default None
         bg_temp : float, optional
             Assumed background temperature (K), by default 2.7
+        Beff : float, optional
+            Beam efficiency, by default 1.0
+        Feff : float, optional
+            Forward efficiency, by default 1.0
         """
         # Initialize BaseModel
         super().__init__(*args, **kwargs)
@@ -40,20 +53,8 @@ class HFSModel(BaseModel):
         self.mol_weight = mol_weight
         self.mol_data = mol_data.copy()
         self.bg_temp = bg_temp
-
-        """
-        # Drop un-observed components
-        drop = np.ones(len(self.mol_data["freq"]), dtype=bool)
-        for dataset in self.data.values():
-            for i, freq in enumerate(self.mol_data["freq"]):
-                if dataset.spectral.min() <= freq <= dataset.spectral.max():
-                    drop[i] = False
-        if self.verbose:
-            print("Dropping the un-observed transitions at the following frequencies (MHz):")
-            print(self.mol_data["freq"][drop])
-        for key in ["freq", "Aul", "degu", "Eu", "relative_int"]:
-            self.mol_data[key] = self.mol_data[key][~drop]
-        """
+        self.Beff = Beff
+        self.Feff = Feff
 
         # Add components to model
         coords = {
@@ -63,7 +64,6 @@ class HFSModel(BaseModel):
 
         # Select features used for posterior clustering
         self._cluster_features += [
-            "tau_total",
             "fwhm",
             "velocity",
         ]
@@ -80,7 +80,6 @@ class HFSModel(BaseModel):
                 "fwhm_thermal": r"$\Delta V_{\rm th}$ (km s$^{-1}$)",
                 "fwhm_nonthermal": r"$\Delta V_{\rm nt}$ (km s$^{-1}$)",
                 "fwhm": r"$\Delta V$ (km s$^{-1}$)",
-                "rms_observation": r"rms (K)",
                 "fwhm_L": r"$\Delta V_{L}$ (km s$^{-1}$)",
             }
         )
@@ -92,9 +91,10 @@ class HFSModel(BaseModel):
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_fwhm_nonthermal: float = 0.1,
         prior_fwhm_L: float = 1.0,
-        prior_rms: Optional[float] = None,
-        prior_baseline_coeffs: Optional[Iterable[float]] = None,
-        fix_tau_total: bool = False,
+        prior_rms: Optional[dict[str, float]] = None,
+        prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
+        fix_tau_total: Optional[float] = None,
+        fix_log10_Tkin: Optional[float] = None,
         ordered: bool = False,
     ):
         """Add priors and deterministics to the model
@@ -118,17 +118,23 @@ class HFSModel(BaseModel):
             Prior distribution on the latent pseudo-Voight Lorentzian profile line width (km/s),
             by default 1.0, where
             fwhm_L ~ HalfNormal(sigma=prior_fwhm_L)
-        prior_rms : Optional[float], optional
+        prior_rms : Optional[dict[str, float]], optional
             Prior distribution on spectral rms (K), by default None, where
             rms ~ HalfNormal(sigma=prior)
-            If None, then the spectral rms is taken from the data and not inferred.
-        prior_baseline_coeffs : Optional[Iterable[float]], optional
+            Keys are dataset names and values are priors. If None, then the spectral rms is taken
+            from dataset.noise and not inferred.
+        prior_baseline_coeffs : Optional[dict[str, Iterable[float]]], optional
             Width of normal prior distribution on the normalized baseline polynomial coefficients.
-            Must be a list of length `baseline_degree+1`. If None, use `[1.0]*(baseline_degree+1)`,
-            by default None
-        fix_tau_total : bool, optional
-            If True, fix the total optical depth at prior_tau_total. Otherwise, tau_total is a free
-            parameter. Set fix_tau_total = True when the excitation temperature cannot be reliably
+            Keys are dataset names and values are lists of length `baseline_degree+1`. If None, use
+            `[1.0]*(baseline_degree+1)` for each dataset, by default None
+        fix_tau_total : Optional[float], optional
+            If not None, fix the total optical depth at this value. Otherwise, tau_total is a free
+            parameter. Set fix_tau_total or fix_log10_Tkin to true when the excitation temperature cannot be reliably
+            estimated from the line width (i.e., when non-thermal broadening is important, or when
+            the channels are wide compared to the line width, or in non-LTE when Tkin != Tex.)
+        fix_log10_Tkin : Optional[float], optional
+            If not None, fix the log10_Tkin at this value. Otherwise, log10_Tkin is a free
+            parameter. Set fix_tau_total or fix_log10_Tkin to true when the excitation temperature cannot be reliably
             estimated from the line width (i.e., when non-thermal broadening is important, or when
             the channels are wide compared to the line width, or in non-LTE when Tkin != Tex.)
         ordered : bool, optional
@@ -137,27 +143,32 @@ class HFSModel(BaseModel):
             velocity(cloud = n) ~
                 prior[0] + sum_i(velocity[i < n]) + Gamma(alpha=2.0, beta=1.0/prior[1])
         """
-        if prior_baseline_coeffs is not None:
-            prior_baseline_coeffs = {"observation": prior_baseline_coeffs}
-
         # add polynomial baseline priors
         super().add_baseline_priors(prior_baseline_coeffs=prior_baseline_coeffs)
 
         with self.model:
             # total optical depth (shape: clouds)
-            if fix_tau_total:
-                _ = pm.Data("tau_total", np.ones(self.n_clouds) * prior_tau_total, dims="cloud")
+            if fix_tau_total is not None:
+                # tau_total is fixed
+                _ = pm.Data("tau_total", np.ones(self.n_clouds) * fix_tau_total, dims="cloud")
             else:
+                # Also cluster in tau_total
+                self._cluster_features += ["tau_total"]
+
                 tau_total_norm = pm.HalfNormal("tau_total_norm", sigma=1.0, dims="cloud")
                 _ = pm.Deterministic("tau_total", prior_tau_total * tau_total_norm, dims="cloud")
 
             # kinetic temperature (K; shape: clouds)
-            log10_Tkin_norm = pm.Normal("log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud")
-            log10_Tkin = pm.Deterministic(
-                "log10_Tkin",
-                prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
-                dims="cloud",
-            )
+            if fix_log10_Tkin:
+                # log10_Tkin is fixed
+                log10_Tkin = pm.Data("log10_Tkin", np.ones(self.n_clouds) * fix_log10_Tkin, dims="cloud")
+            else:
+                log10_Tkin_norm = pm.Normal("log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud")
+                log10_Tkin = pm.Deterministic(
+                    "log10_Tkin",
+                    prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
+                    dims="cloud",
+                )
 
             # Velocity (km/s; shape: clouds)
             if ordered:
@@ -196,8 +207,9 @@ class HFSModel(BaseModel):
 
             # Spectral rms (K)
             if prior_rms is not None:
-                rms_observation_norm = pm.HalfNormal("rms_observation_norm", sigma=1.0)
-                _ = pm.Deterministic("rms_observation", rms_observation_norm * prior_rms)
+                for label in self.data.keys():
+                    rms_norm = pm.HalfNormal(f"rms_{label}_norm", sigma=1.0)
+                    _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
 
             # Total (physical) FWHM (km/s; shape: clouds)
             _ = pm.Deterministic("fwhm", pt.sqrt(fwhm_thermal**2.0 + fwhm_nonthermal**2.0), dims="cloud")
@@ -208,35 +220,45 @@ class HFSModel(BaseModel):
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""
-        # Predict optical depth spectra (shape: spectral, components, clouds)
-        tau = physics.predict_tau(
-            self.mol_data,
-            self.data["observation"].spectral,
-            self.model["tau_total"],
-            self.model["velocity"],
-            self.model["fwhm"],
-            self.model["tau_weight"],
-            self.model["fwhm_L"],
-        )
-
-        # Radiative transfer (shape: spectral)
-        predicted_line = physics.radiative_transfer(
-            self.data["observation"].spectral,
-            tau,
-            self.model["Tex"],
-            self.bg_temp,
-        )
-
-        # Add baseline model
+        # Predict baseline models
         baseline_models = self.predict_baseline()
-        predicted = predicted_line + baseline_models["observation"]
 
-        with self.model:
-            # Evaluate likelihood
-            sigma = self.model["rms_observation"] if "rms_observation" in self.model else self.data["observation"].noise
-            _ = pm.Normal(
-                "observation",
-                mu=predicted,
-                sigma=sigma,
-                observed=self.data["observation"].brightness,
+        # Predict all spectra
+        for label, dataset in self.data.items():
+            tau = physics.predict_tau(
+                self.mol_data,
+                dataset.spectral,
+                self.model["tau_total"],
+                self.model["velocity"],
+                self.model["fwhm"],
+                self.model["tau_weight"],
+                self.model["fwhm_L"],
             )
+
+            # Radiative transfer (shape: spectral)
+            predicted_line = (
+                self.Beff
+                / self.Feff
+                * physics.radiative_transfer(
+                    dataset.spectral,
+                    tau,
+                    self.model["Tex"],
+                    self.bg_temp,
+                )
+            )
+
+            # Add baseline model
+            predicted = predicted_line + baseline_models[label]
+
+            with self.model:
+                sigma = dataset.noise
+                if f"rms_{label}" in self.model:
+                    sigma = self.model[f"rms_{label}"]
+
+                # Evaluate likelihood
+                _ = pm.Normal(
+                    label,
+                    mu=predicted,
+                    sigma=sigma,
+                    observed=dataset.brightness,
+                )

@@ -1,6 +1,6 @@
 """
-cn_ratio_anomaly_model.py
-CNRatioAnomalyModel definition
+cn_ratio_lte_model.py
+CNRatioLTEModel definition
 
 Copyright(C) 2024 by
 Trey V. Wenger; tvwenger@gmail.com
@@ -14,42 +14,25 @@ import pytensor.tensor as pt
 from bayes_cn_hfs.cn_ratio_model import CNRatioModel
 
 
-class CNRatioAnomalyModel(CNRatioModel):
-    """Definition of the CNRatioAnomalyModel. SpecData keys must be "12CN" and "13CN"."""
+class CNRatioLTEModel(CNRatioModel):
+    """Definition of the CNRatioLTEModel. SpecData keys must include the strings "12CN" and "13CN"."""
 
     def add_priors(
         self,
         *args,
-        prior_log10_anomaly_12CN: float = 0.1,
         **kwargs,
     ):
-        """Add priors and deterministics to the model
-
-        Parameters
-        ----------
-        prior_log10_anomaly_12CN : float, optional
-            Prior distribution on the CN excitation temperature anomaly (dex), by default 0.1, where
-            log10_Tex_12CN ~ Normal(mu=log10_Tex_12CN, sigma=prior)
-        """
+        """Add priors and deterministics to the model"""
         # add CNRatioModel priors
         super().add_priors(*args, **kwargs)
 
         with self.model:
-            # Hyperfine anomaly
-            log10_anomaly_12CN_norm = pm.Normal(
-                "log10_anomaly_12CN_norm", mu=0.0, sigma=1.0, dims=["component_12CN", "cloud"]
-            )
-            log10_anomaly_12CN = pm.Deterministic(
-                "log10_anomaly_12CN",
-                prior_log10_anomaly_12CN * log10_anomaly_12CN_norm,
-                dims=["component_12CN", "cloud"],
-            )
-            anomaly_12CN = 10.0**log10_anomaly_12CN
-
             # Excitation temperature (K; shape: components, clouds)
             # LTE assumption: Tkin = Tex for all clouds and transitions
             _ = pm.Deterministic(
-                "Tex_12CN", anomaly_12CN * 10.0 ** self.model["log10_Tkin"][None, :], dims=["component_12CN", "cloud"]
+                "Tex_12CN",
+                pt.repeat(10.0 ** self.model["log10_Tkin"][None, :], len(self.mol_data_12CN["freq"]), 0),
+                dims=["component_12CN", "cloud"],
             )
             _ = pm.Deterministic(
                 "Tex_13CN",

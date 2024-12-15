@@ -17,7 +17,14 @@ class HFSAnomalyModel(HFSModel):
     """Definition of the HFSAnomalyModel. SpecData key must be "observation"."""
 
     def add_priors(self, *args, prior_log10_anomaly: float = 0.1, **kwargs):
-        """Add priors and deterministics to the model"""
+        """Add priors and deterministics to the model
+
+        Parameters
+        ----------
+        prior_log10_anomaly : float, optional
+            Prior distribution on the CN excitation temperature anomaly (dex), by default 0.1, where
+            log10_Tex ~ Normal(mu=log10_Tex, sigma=prior)
+        """
         # add HFSModel priors, and break degeneracy between optical depth and excitation temperature
         # by assuming tau_total = prior_tau_total.
         super().add_priors(*args, **kwargs)
@@ -30,8 +37,7 @@ class HFSAnomalyModel(HFSModel):
             )
             anomaly = 10.0**log10_anomaly
 
-            # Excitation temperature (K; shape: components, clouds)
-            # LTE assumption: Tkin = Tex for all clouds and transitions
+            # Anomalous excitation temperature (K; shape: components, clouds)
             _ = pm.Deterministic(
                 "Tex", anomaly * 10.0 ** self.model["log10_Tkin"][None, :], dims=["component", "cloud"]
             )
