@@ -7,7 +7,7 @@ Trey V. Wenger; tvwenger@gmail.com
 This code is licensed under MIT license (see LICENSE for details)
 """
 
-from typing import Iterable
+from typing import Iterable, Optional
 
 import numpy as np
 import pytensor.tensor as pt
@@ -52,6 +52,103 @@ def lorentzian(x: float, center: float, fwhm: float) -> float:
     return fwhm / (2.0 * np.pi) / ((x - center) ** 2.0 + (fwhm / 2.0) ** 2.0)
 
 
+def detailed_balance(
+    mol_data: dict,
+    log10_N0: Optional[float] = None,
+    log_boltz_factor: Optional[Iterable[float]] = None,
+    verbose: bool = False,
+):
+    """Determine which transitions constrain which states, and optionally apply detailed balance
+    to derive state column densities.
+
+    Parameters
+    ----------
+    mol_data : dict
+        Molecular data dictionary returned by get_molecule_data(). If None, it will
+        be downloaded. Default is None
+    log10_N0 : Optional[float], optional
+        Ground state column density, by default None. If not None, then the return values
+        for constraint_l and constraint_u are populated with the column densities of each state.
+    log_boltz_factor : Optional[Iterable[float]], optional
+        Log Boltzmann factor for each transition, by default None. Only used if log10_N0 is not
+        None.
+    verbose : bool, optional
+        If True, print information
+
+    Returns
+    -------
+    list
+        Free transitions
+    list
+        The transition that constrains each lower state. Value is -1 for the ground state.
+        If log10_N0 is not None, then instead this list contains the column density for
+        each state.
+    list
+        The transition that constrains each upper state. Value is -1 for the ground state.
+        If log10_N0 is not None, then instead this list contains the column density for
+        each state.
+    """
+    states_l = list(set(mol_data["Ql"]))
+    states_u = list(set(mol_data["Qu"]))
+
+    constraint_l = [None] * len(states_l)
+    constraint_u = [None] * len(states_u)
+
+    # Ground state is given
+    for state_l, El in zip(mol_data["state_l"], mol_data["El"]):
+        if El == 0.0:
+            constraint_l[state_l] = -1 if log10_N0 is None else log10_N0
+
+    # Loop over remaining transitions until all states are constrained
+    transition_used = [False] * len(mol_data["freq"])
+    while None in constraint_l + constraint_u:
+        for i, (state_l, state_u) in enumerate(zip(mol_data["state_l"], mol_data["state_u"])):
+            # check if either lower or upper state is populated
+            if constraint_l[state_l] is not None and constraint_u[state_u] is None:
+                constraint_u[state_u] = (
+                    i
+                    if log10_N0 is None
+                    else (
+                        log_boltz_factor[i] / pt.log(10.0)
+                        + constraint_l[state_l]
+                        + pt.log10(mol_data["Gu"][i] / mol_data["Gl"][i])
+                    )
+                )
+                transition_used[i] = True
+                if verbose:
+                    print(
+                        f"Transition {mol_data['freq'][i]} is constraining upper state "
+                        + f"{state_u} from lower state {state_l}"
+                    )
+            elif constraint_l[state_l] is None and constraint_u[state_u] is not None:
+                constraint_l[state_l] = (
+                    i
+                    if log10_N0 is None
+                    else (
+                        -log_boltz_factor[i] / pt.log(10.0)
+                        + constraint_u[state_u]
+                        + pt.log10(mol_data["Gl"][i] / mol_data["Gu"][i])
+                    )
+                )
+                transition_used[i] = True
+                if verbose:
+                    print(
+                        f"Transition {mol_data['freq'][i]} is constraining lower state "
+                        + f"{state_l} from upper state {state_u}"
+                    )
+                transition_used[i] = True
+    if verbose:
+        print(f"{np.sum(transition_used)}/{len(transition_used)} transitions used to constrain state densities")
+
+    transition_free = mol_data["freq"][np.array(transition_used)]
+    transition_derived = mol_data["freq"][~np.array(transition_used)]
+    if verbose:
+        print(f"Free Tex transitions: {transition_free}")
+        print(f"Derived Tex transitions: {transition_derived}")
+
+    return transition_free, constraint_l, constraint_u
+
+
 def calc_frequency(mol_data: dict, velocity: Iterable[float]) -> Iterable[float]:
     """Apply the Doppler equation to calculate the frequency in the same frame as the velocity.
 
@@ -59,7 +156,7 @@ def calc_frequency(mol_data: dict, velocity: Iterable[float]) -> Iterable[float]
     ----------
     mol_data : dict
         Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of component frequencies
+        mol_data['freq'] contains C-length array of transition frequencies
     velocity : Iterable[float]
         Velocity (km/s) (length N)
 
@@ -81,7 +178,7 @@ def calc_fwhm_freq(
     ----------
     mol_data : dict
         Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of component frequencies
+        mol_data['freq'] contains C-length array of transition frequencies
     fwhm : Iterable[float]
         FWHM line width (km/s) in velocity units (length C)
 
@@ -102,7 +199,7 @@ def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
     kinetic_temp : float
         Kinetic temperature (K)
     weight : float
-        Molecular weight (number of protons)
+        Molecular weight (number of nucleii)
 
     Returns
     -------
@@ -114,28 +211,8 @@ def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
     return const * pt.sqrt(kinetic_temp / weight)
 
 
-def calc_nonthermal_fwhm(depth: float, nth_fwhm_1pc: float, depth_nth_fwhm_power: float) -> float:
-    """Calculate the non-thermal line broadening assuming a power-law size-linewidth relationship.
-
-    Parameters
-    ----------
-    depth : float
-        Line-of-sight depth (pc)
-    nth_fwhm_1pc : float
-        Non-thermal broadening at 1 pc (km s-1)
-    depth_nth_fwhm_power : float
-        Power law index
-
-    Returns
-    -------
-    float
-        Non-thermal FWHM line width (km/s)
-    """
-    return nth_fwhm_1pc * depth**depth_nth_fwhm_power
-
-
 def calc_log_boltz_factor(freq: float, Tex: float) -> float:
-    """Evaluate the Boltzmann factor from a given excitation temperature.
+    """Evaluate the log Boltzmann factor from a given excitation temperature.
 
     Parameters
     ----------
@@ -147,7 +224,7 @@ def calc_log_boltz_factor(freq: float, Tex: float) -> float:
     Returns
     -------
     float
-        log Boltzmann factor = -h*freq/(k*Tex)
+        log Boltzmann factor = log(gl*Nu) - log(gu*Nl) = -h*freq/(k*Tex)
     """
     return -_H * freq / (_K_B * Tex)
 
@@ -212,34 +289,84 @@ def calc_pseudo_voigt(
     return eta * lorentz_part + (1.0 - eta) * gauss_part
 
 
-def calc_optical_depth(
-    tau_total: Iterable[float],
-    tau_weight: Iterable[float],
-) -> Iterable[float]:
-    """Evaluate the relative optical depth contribution of each transition.
+def calc_line_profile_amplitude(
+    fwhm: Iterable[float],
+    fwhm_L: float,
+):
+    """Evaluate line profile amplitude, ignoring channelization effects
 
     Parameters
     ----------
-    tau_total : Iterable[float]
-        Total optical depth (length N)
-    tau_weight : Iterable[float]
-        Optical depth weight per component (length C x N)
+    fwhm : Iterable[float]
+        Cloud FWHM line widths (MHz length C x N)
+    fwhm_L : float
+        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
 
     Returns
     -------
     Iterable[float]
-        Optical depth of each component (shape C x N)
+        Line profile amplitude (km-1 s; shape C x N)
     """
-    return tau_total * tau_weight
+    # Evaluate line profile at center
+    fwhm_conv = pt.sqrt(fwhm**2.0 + fwhm_L**2.0)
+    fwhm_L_frac = fwhm_L / fwhm_conv
+    eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
+    gauss_part = pt.sqrt(4.0 * pt.log(2.0) / (np.pi * fwhm_conv**2.0))
+    lorentz_part = fwhm_conv / (2.0 * np.pi) / ((fwhm_conv / 2.0) ** 2.0)
+    return eta * lorentz_part + (1.0 - eta) * gauss_part
+
+
+def calc_optical_depth(
+    gu: Iterable[float],
+    gl: Iterable[float],
+    Nl: Iterable[float],
+    log_boltz_factor: Iterable[float],
+    line_profile: Iterable[float],
+    freq: Iterable[float],
+    Aul: Iterable[float],
+) -> Iterable[float]:
+    """Evaluate the optical depth spectra, from Mangum & Shirley eq. 29
+
+    Parameters
+    ----------
+    gu : Iterable[float]
+        Upper state degeneracy (shape C)
+    gl : Iterable[float]
+        Lower state degeneracy (shape C)
+    Nl : Iterable[float]
+        Lower state column densities (shape C x N)
+    log_boltz_factor : Iterable[float]
+        log Boltzmann factor (shape C x N)
+    line_profile : Iterable[float]
+        Line profile (km-1 s; shape S x C x N)
+    freq : Iterable[float]
+        Transition frequency (MHz) (shape C)
+    Aul : Iterable[float]
+        Transition Einstein A coefficient (s-1) (shape C)
+
+    Returns
+    -------
+    Iterable[float]
+        Optical depth spectral (shape S x C x N)
+    """
+    return (
+        _C_CM_MHZ**2.0  # cm2 MHz2
+        / (8.0 * np.pi * freq**2.0)  # MHz-2
+        * (gu / gl)
+        * Aul  # s-1
+        * (_C * line_profile / (1e6 * freq))  # Hz-1
+        * Nl  # cm-2
+        * (1.0 - pt.exp(log_boltz_factor))
+    )
 
 
 def predict_tau(
     mol_data: dict,
     freq_axis: Iterable[float],
-    tau_total: Iterable[float],
+    Nl: Iterable[float],
+    log_boltz_factor: Iterable[float],
     velocity: Iterable[float],
     fwhm: Iterable[float],
-    tau_weight: Iterable[float],
     fwhm_L: float,
 ) -> Iterable[float]:
     """Predict the optical depth spectra from model parameters.
@@ -248,17 +375,17 @@ def predict_tau(
     ----------
     mol_data : dict
         Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of component frequencies
+        mol_data['freq'] contains C-length array of transition frequencies
     freq_axis : Iterable[float]
         Observed frequency axis (MHz length S)
-    tau_total : Iterable[float]
-        Total optical depth (length N)
+    Nl : Iterable[float]
+        Lower state column densities (shape C x N)
+    log_boltz_factor : Iterable[float]
+        log Boltzmann factor (shape C x N)
     velocity : Iterable[float]
         Velocity (km s-1) (length N)
     fwhm : Iterable[float]
         FWHM line width (km s-1) (length N)
-    tau_weight : Iterable[float]
-        Optical depth weight per component (length C x N)
     fwhm_L : float
         Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
 
@@ -267,21 +394,26 @@ def predict_tau(
     Iterable[float]
         Predicted optical depth spectra (shape S x C x N)
     """
-    # Frequency (MHz; shape: components, clouds)
+    # Frequency (MHz; shape: transitions, clouds)
     frequency = calc_frequency(mol_data, velocity)
 
-    # Total FWHM line width in frequency units (MHz; shape: components, clouds)
+    # Total FWHM line width in frequency units (MHz; shape: transitions, clouds)
     fwhm_freq = calc_fwhm_freq(mol_data, fwhm)
 
-    # Line profile (MHz-1; shape: spectral, components, clouds)
+    # Line profile (MHz-1; shape: spectral, transitions, clouds)
     line_profile = calc_pseudo_voigt(freq_axis, frequency, fwhm_freq, fwhm_L)
 
-    # Optical depth contributions (shape: components, clouds)
-    tau = calc_optical_depth(tau_total, tau_weight)
-
-    # Integrate over channels
-    channel_size = pt.abs(freq_axis[1] - freq_axis[0])
-    return tau * line_profile * channel_size
+    # Optical depth  (shape: spectral, transitions, clouds)
+    tau = calc_optical_depth(
+        mol_data["Gu"][None, :, None],
+        mol_data["Gl"][None, :, None],
+        Nl[None, :, :],
+        log_boltz_factor[None, :, :],
+        line_profile,
+        mol_data["freq"][None, :, None],
+        mol_data["Aul"][None, :, None],
+    )
+    return tau
 
 
 def rj_temperature(freq: float, temp: float):
@@ -320,8 +452,8 @@ def radiative_transfer(
         Frequency axis (MHz) (length S)
     tau : Iterable[float]
         Optical depth spectra (shape S x C x N)
-    tex : Iterable[float]
-        Component/cloud excitation temperatures (K) (shape C x N)
+    Tex : Iterable[float]
+        Excitation temperatures (K) (shape C x N)
     bg_temp : float
         Assumed background temperature
 
@@ -331,15 +463,15 @@ def radiative_transfer(
         Predicted emission brightness temperature spectrum (K) (length S)
     """
     front_tau = pt.zeros_like(tau[:, 0, 0:1])
-    # sum over components and cumsum over clouds
+    # sum over transitions and cumsum over clouds
     sum_tau = pt.concatenate([front_tau, pt.cumsum(tau.sum(axis=1), axis=1)], axis=1)
 
     # radiative transfer, assuming filling factor = 1.0
     emission_bg = rj_temperature(freq_axis, bg_temp)
     emission_bg_attenuated = emission_bg * pt.exp(-sum_tau[:, -1])
-    emission_components_clouds = rj_temperature(freq_axis[:, None, None], Tex) * (1.0 - pt.exp(-tau))
-    # sum over components
-    emission_clouds = emission_components_clouds.sum(axis=1)
+    emission_transitions_clouds = rj_temperature(freq_axis[:, None, None], Tex) * (1.0 - pt.exp(-tau))
+    # sum over transitions
+    emission_clouds = emission_transitions_clouds.sum(axis=1)
     emission_clouds_attenuated = emission_clouds * pt.exp(-sum_tau[:, :-1])
     emission = emission_bg_attenuated + emission_clouds_attenuated.sum(axis=1)
 
