@@ -314,7 +314,7 @@ class CNRatioModel(BaseModel):
                 # CN State column densities
                 log_boltz_factor_12CN = [
                     (
-                        log_boltz_factor_12CN_free[self.model.coords["transition_free"].index(freq)]
+                        log_boltz_factor_12CN_free[self.model.coords["transition_free_12CN"].index(freq)]
                         if freq in self.model.coords["transition_free_12CN"]
                         else None
                     )
@@ -330,8 +330,8 @@ class CNRatioModel(BaseModel):
                     pt.stack(
                         [
                             (
-                                log_boltz_factor_12CN_free[self.model.coords["transition_free"].index(freq)]
-                                if freq in self.model.coords["transition_free"]
+                                log_boltz_factor_12CN_free[self.model.coords["transition_free_12CN"].index(freq)]
+                                if freq in self.model.coords["transition_free_12CN"]
                                 else pt.log(10.0)
                                 * (pt.log10(Gl / Gu) + log10_Nu_12CN[state_u] - log10_Nl_12CN[state_l])
                             )
