@@ -96,14 +96,14 @@ class CNModel(BaseModel):
                 "fwhm_nonthermal": r"$\Delta V_{\rm nt}$ (km s$^{-1}$)",
                 "fwhm": r"$\Delta V$ (km s$^{-1}$)",
                 "fwhm_L": r"$\Delta V_L$ (km s$^{-1}$)",
-                "tau_peak": r"$\tau_0$",
+                "tau": r"$\tau$",
                 "tau_total": r"$\tau_{\rm tot}$",
             }
         )
 
     def add_priors(
         self,
-        prior_log10_N0: Iterable[float] = [12.0, 1.0],
+        prior_log10_N0: Iterable[float] = [13.0, 1.0],
         prior_log10_Tex: Iterable[float] = [1.75, 0.25],
         prior_log10_Tkin: Iterable[float] = [1.75, 0.25],
         prior_velocity: Iterable[float] = [0.0, 10.0],
@@ -121,7 +121,7 @@ class CNModel(BaseModel):
         Parameters
         ----------
         prior_log10_N0 : Iterable[float], optional
-            Prior distribution on ground state column density, by default [12.0, 1.0], where
+            Prior distribution on ground state column density, by default [13.0, 1.0], where
             log10_N0 ~ Normal(mu=prior[0], sigma=prior[1])
         prior_log10_Tex : Iterable[float], optional
             Prior distribution on log10 cloud mean excitation temperature (K), by
@@ -256,6 +256,14 @@ class CNModel(BaseModel):
                 )
 
                 # State column densities
+                log_boltz_factor = [
+                    (
+                        log_boltz_factor_free[self.model.coords["transition_free"].index(freq)]
+                        if freq in self.model.coords["transition_free"]
+                        else None
+                    )
+                    for freq in self.mol_data["freq"]
+                ]
                 _, log10_Nl, log10_Nu = physics.detailed_balance(
                     self.mol_data, log10_N0=log10_N0, log_boltz_factor=log_boltz_factor, verbose=False
                 )
@@ -329,7 +337,7 @@ class CNModel(BaseModel):
 
             # Non-thermal FWHM (km/s; shape: clouds)
             fwhm_nonthermal = 0.0
-            if prior_fwhm_nonthermal is not None:
+            if prior_fwhm_nonthermal > 0:
                 fwhm_nonthermal_norm = pm.HalfNormal("fwhm_nonthermal_norm", sigma=1.0, dims="cloud")
                 fwhm_nonthermal = pm.Deterministic(
                     "fwhm_nonthermal", prior_fwhm_nonthermal * fwhm_nonthermal_norm, dims="cloud"
@@ -342,27 +350,25 @@ class CNModel(BaseModel):
                     _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
 
             # Total (physical) FWHM (km/s; shape: clouds)
-            fwhm = pm.Deterministic("fwhm", pt.sqrt(fwhm_thermal**2.0 + fwhm_nonthermal**2.0), dims="cloud")
+            _ = pm.Deterministic("fwhm", pt.sqrt(fwhm_thermal**2.0 + fwhm_nonthermal**2.0), dims="cloud")
 
             # Pseudo-Voigt profile latent variable (km/s)
             fwhm_L_norm = pm.HalfNormal("fwhm_L_norm", sigma=1.0)
-            fwhm_L = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
-
-            # line profile amplitude (km-1 s; shape: transitions, clouds)
-            line_profile_amplitude = physics.calc_line_profile_amplitude(fwhm, fwhm_L)
+            _ = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
 
             # Get lower state column density for each transition (shape: transitions, clouds)
             Nl = pt.stack([10.0 ** log10_Nl[state_l] for state_l in self.mol_data["state_l"]])
 
-            # peak optical depths (shape: transitions, clouds)
-            tau_peak = pm.Deterministic(
-                "tau_peak",
+            # total optical depths (shape: transitions, clouds)
+            # set line_profile = 1.0 to calculate total optical depth
+            tau = pm.Deterministic(
+                "tau",
                 physics.calc_optical_depth(
                     self.mol_data["Gu"][:, None],
                     self.mol_data["Gl"][:, None],
                     Nl,
                     log_boltz_factor,
-                    line_profile_amplitude,
+                    1.0,
                     self.mol_data["freq"][:, None],
                     self.mol_data["Aul"][:, None],
                 ),
@@ -370,7 +376,7 @@ class CNModel(BaseModel):
             )
 
             # total optical depth (shape: clouds)
-            _ = pm.Deterministic("tau_total", pt.sum(tau_peak, axis=0), dims="cloud")
+            _ = pm.Deterministic("tau_total", pt.sum(tau, axis=0), dims="cloud")
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""

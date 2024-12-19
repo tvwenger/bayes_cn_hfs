@@ -64,8 +64,7 @@ def detailed_balance(
     Parameters
     ----------
     mol_data : dict
-        Molecular data dictionary returned by get_molecule_data(). If None, it will
-        be downloaded. Default is None
+        Molecular data dictionary returned by supplement_mol_data().
     log10_N0 : Optional[float], optional
         Ground state column density, by default None. If not None, then the return values
         for constraint_l and constraint_u are populated with the column densities of each state.
@@ -115,7 +114,7 @@ def detailed_balance(
                     )
                 )
                 transition_used[i] = True
-                if verbose:
+                if verbose:  # pragma: no cover
                     print(
                         f"Transition {mol_data['freq'][i]} is constraining upper state "
                         + f"{state_u} from lower state {state_l}"
@@ -131,63 +130,58 @@ def detailed_balance(
                     )
                 )
                 transition_used[i] = True
-                if verbose:
+                if verbose:  # pragma: no cover
                     print(
                         f"Transition {mol_data['freq'][i]} is constraining lower state "
                         + f"{state_l} from upper state {state_u}"
                     )
                 transition_used[i] = True
-    if verbose:
+    if verbose:  # pragma: no cover
         print(f"{np.sum(transition_used)}/{len(transition_used)} transitions used to constrain state densities")
 
     transition_free = mol_data["freq"][np.array(transition_used)]
     transition_derived = mol_data["freq"][~np.array(transition_used)]
-    if verbose:
+    if verbose:  # pragma: no cover
         print(f"Free Tex transitions: {transition_free}")
         print(f"Derived Tex transitions: {transition_derived}")
 
     return transition_free, constraint_l, constraint_u
 
 
-def calc_frequency(mol_data: dict, velocity: Iterable[float]) -> Iterable[float]:
+def calc_frequency(freq: float, velocity: float) -> float:
     """Apply the Doppler equation to calculate the frequency in the same frame as the velocity.
 
     Parameters
     ----------
-    mol_data : dict
-        Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of transition frequencies
-    velocity : Iterable[float]
-        Velocity (km/s) (length N)
+    freq : float
+        Frequencies. Output has same units.
+    velocity : float
+        Velocity (km/s)
 
     Returns
     -------
-    Iterable[float]
-        Radio-defined Doppler frequency (shape C x N)
+    float
+        Radio-defined Doppler frequency
     """
-    return mol_data["freq"][:, None] * (1.0 - velocity / _C)
+    return freq * (1.0 - velocity / _C)
 
 
-def calc_fwhm_freq(
-    mol_data: dict,
-    fwhm: Iterable[float],
-) -> Iterable[float]:
+def calc_fwhm_freq(freq: float, fwhm: float) -> float:
     """Calculate the FWHM line width in frequency units
 
     Parameters
     ----------
-    mol_data : dict
-        Dictionary of molecular data returned by utils.get_molecule_data
-        mol_data['freq'] contains C-length array of transition frequencies
-    fwhm : Iterable[float]
+    freq : float
+        Frequencies. Output has same units.
+    fwhm : float
         FWHM line width (km/s) in velocity units (length C)
 
     Returns
     -------
-    Iterable[float]
+    float
         FWHM line width (MHz) in frequency units (shape C x N)
     """
-    return mol_data["freq"][:, None] * fwhm / _C
+    return freq * fwhm / _C
 
 
 def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
@@ -248,7 +242,10 @@ def calc_Tex(freq: float, log_boltz_factor: float) -> float:
 
 
 def calc_pseudo_voigt(
-    freq_axis: Iterable[float], frequency: Iterable[float], fwhm: Iterable[float], fwhm_L: float
+    freq_axis: Iterable[float],
+    frequency: Iterable[float],
+    fwhm: Iterable[float],
+    fwhm_L: Iterable[float],
 ) -> Iterable[float]:
     """Evaluate a pseudo Voight profile in order to aid in posterior exploration
     of the parameter space. This parameterization includes a latent variable fwhm_L, which
@@ -265,8 +262,8 @@ def calc_pseudo_voigt(
         Cloud center frequency (MHz length C x N)
     fwhm : Iterable[float]
         Cloud FWHM line widths (MHz length C x N)
-    fwhm_L : float
-        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
+    fwhm_L : Iterable[float]
+        Latent pseudo-Voigt profile Lorentzian FWHM (MHz length C)
 
     Returns
     -------
@@ -275,78 +272,52 @@ def calc_pseudo_voigt(
     """
     channel_size = pt.abs(freq_axis[1] - freq_axis[0])
     channel_fwhm = 4.0 * pt.log(2.0) * channel_size / np.pi
-    fwhm_conv = pt.sqrt(fwhm**2.0 + channel_fwhm**2.0 + fwhm_L**2.0)
-    fwhm_L_frac = fwhm_L / fwhm_conv
+    fwhm_conv = pt.sqrt(fwhm**2.0 + channel_fwhm**2.0 + fwhm_L[:, None] ** 2.0)
+    fwhm_L_frac = fwhm_L[:, None] / fwhm_conv
     eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
 
     # gaussian component
-    gauss_part = gaussian(freq_axis[:, None, None], frequency, fwhm_conv)
+    gauss_part = gaussian(freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :])
 
     # lorentzian component
-    lorentz_part = lorentzian(freq_axis[:, None, None], frequency, fwhm_conv)
+    lorentz_part = lorentzian(freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :])
 
     # linear combination
     return eta * lorentz_part + (1.0 - eta) * gauss_part
 
 
-def calc_line_profile_amplitude(
-    fwhm: Iterable[float],
-    fwhm_L: float,
-):
-    """Evaluate line profile amplitude, ignoring channelization effects
-
-    Parameters
-    ----------
-    fwhm : Iterable[float]
-        Cloud FWHM line widths (MHz length C x N)
-    fwhm_L : float
-        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
-
-    Returns
-    -------
-    Iterable[float]
-        Line profile amplitude (km-1 s; shape C x N)
-    """
-    # Evaluate line profile at center
-    fwhm_conv = pt.sqrt(fwhm**2.0 + fwhm_L**2.0)
-    fwhm_L_frac = fwhm_L / fwhm_conv
-    eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
-    gauss_part = pt.sqrt(4.0 * pt.log(2.0) / (np.pi * fwhm_conv**2.0))
-    lorentz_part = fwhm_conv / (2.0 * np.pi) / ((fwhm_conv / 2.0) ** 2.0)
-    return eta * lorentz_part + (1.0 - eta) * gauss_part
-
-
 def calc_optical_depth(
-    gu: Iterable[float],
-    gl: Iterable[float],
-    Nl: Iterable[float],
-    log_boltz_factor: Iterable[float],
-    line_profile: Iterable[float],
-    freq: Iterable[float],
-    Aul: Iterable[float],
-) -> Iterable[float]:
+    gu: float,
+    gl: float,
+    Nl: float,
+    log_boltz_factor: float,
+    line_profile: float,
+    freq: float,
+    Aul: float,
+) -> float:
     """Evaluate the optical depth spectra, from Mangum & Shirley eq. 29
+    Pass line_profile = 1.0 to evaluate the total (integrated) optical depth.
 
     Parameters
     ----------
-    gu : Iterable[float]
+    gu : float
         Upper state degeneracy (shape C)
-    gl : Iterable[float]
+    gl : float
         Lower state degeneracy (shape C)
-    Nl : Iterable[float]
+    Nl : float
         Lower state column densities (shape C x N)
-    log_boltz_factor : Iterable[float]
+    log_boltz_factor : float
         log Boltzmann factor (shape C x N)
-    line_profile : Iterable[float]
-        Line profile (km-1 s; shape S x C x N)
-    freq : Iterable[float]
+    line_profile : float
+        Line profile (MHz-1; shape S x C x N)
+    freq : float
         Transition frequency (MHz) (shape C)
-    Aul : Iterable[float]
+    Aul : float
         Transition Einstein A coefficient (s-1) (shape C)
 
     Returns
     -------
-    Iterable[float]
+    float
         Optical depth spectral (shape S x C x N)
     """
     return (
@@ -354,7 +325,7 @@ def calc_optical_depth(
         / (8.0 * np.pi * freq**2.0)  # MHz-2
         * (gu / gl)
         * Aul  # s-1
-        * (_C * line_profile / (1e6 * freq))  # Hz-1
+        * (line_profile / 1e6)  # Hz-1
         * Nl  # cm-2
         * (1.0 - pt.exp(log_boltz_factor))
     )
@@ -387,7 +358,7 @@ def predict_tau(
     fwhm : Iterable[float]
         FWHM line width (km s-1) (length N)
     fwhm_L : float
-        Latent pseudo-Voigt profile Lorentzian FWHM (km/s)
+        Latent pseudo-Voigt profile Lorentzian FWHM (km s-1)
 
     Returns
     -------
@@ -395,13 +366,16 @@ def predict_tau(
         Predicted optical depth spectra (shape S x C x N)
     """
     # Frequency (MHz; shape: transitions, clouds)
-    frequency = calc_frequency(mol_data, velocity)
+    frequency = calc_frequency(mol_data["freq"][:, None], velocity)
 
     # Total FWHM line width in frequency units (MHz; shape: transitions, clouds)
-    fwhm_freq = calc_fwhm_freq(mol_data, fwhm)
+    fwhm_freq = calc_fwhm_freq(mol_data["freq"][:, None], fwhm)
+
+    # Latent Lorentzian FWHM line width in frequency units (MHz; shape: transitions)
+    fwhm_L_freq = calc_fwhm_freq(mol_data["freq"], fwhm_L)
 
     # Line profile (MHz-1; shape: spectral, transitions, clouds)
-    line_profile = calc_pseudo_voigt(freq_axis, frequency, fwhm_freq, fwhm_L)
+    line_profile = calc_pseudo_voigt(freq_axis, frequency, fwhm_freq, fwhm_L_freq)
 
     # Optical depth  (shape: spectral, transitions, clouds)
     tau = calc_optical_depth(

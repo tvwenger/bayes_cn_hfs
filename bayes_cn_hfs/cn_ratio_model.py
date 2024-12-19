@@ -88,11 +88,12 @@ class CNRatioModel(BaseModel):
         # Define TeX representation of each parameter
         self.var_name_map.update(
             {
-                "log10_N0_12CN": r"$\log_{10} N_0$ (cm$^{-2}$)",
+                "log10_N0_12CN": r"$\log_{10} N_{0, \rm CN}$ (cm$^{-2}$)",
+                "log10_N0_13CN": r"$\log_{10} N_{0, ^{13}\rm CN}$ (cm$^{-2}$)",
                 "log10_Tkin": r"$\log_{10} T_{\rm kin}$ (K)",
                 "log10_Tex_mean": r"$\langle\log_{10} T_{\rm ex}\rangle$ (K)",
                 "Tex_12CN": r"$T_{\rm ex, CN}$ (K)",
-                "Tex_13CN": r"$T_{\rm ex, $^{13}$CN}$ (K)",
+                "Tex_13CN": r"$T_{{\rm ex}, ^{13}\rm CN}$ (K)",
                 "log_boltz_factor_12CN": r"$\ln B_{\rm CN}$",
                 "log_boltz_factor_13CN": r"$\ln B_{^{13}\rm CN}$",
                 "log_boltz_factor_12CN_mean": r"$\langle\ln B_{\rm CN}\rangle$",
@@ -100,30 +101,30 @@ class CNRatioModel(BaseModel):
                 "log10_Nl_12CN": r"$\log_{10} N_{l, \rm CN}$ (cm$^{-2}$)",
                 "log10_N_12CN": r"$\log_{10} N_{\rm tot, CN}$ (cm$^{-2}$)",
                 "log10_Nl_13CN": r"$\log_{10} N_{l, ^{13}\rm CN}$ (cm$^{-2}$)",
-                "log10_N_13CN": r"$\log_{10} N_{\rm tot, $^{13}$CN}$ (cm$^{-2}$)",
+                "log10_N_13CN": r"$\log_{10} N_{{\rm tot}, ^{13}\rm CN}$ (cm$^{-2}$)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
                 "fwhm_thermal_12CN": r"$\Delta V_{\rm th, CN}$ (km s$^{-1}$)",
-                "fwhm_thermal_13CN": r"$\Delta V_{\rm th, $^{13}$CN}$ (km s$^{-1}$)",
+                "fwhm_thermal_13CN": r"$\Delta V_{{\rm th}, ^{13}\rm CN}$ (km s$^{-1}$)",
                 "fwhm_nonthermal": r"$\Delta V_{\rm nt}$ (km s$^{-1}$)",
                 "fwhm_12CN": r"$\Delta V_{\rm CN}$ (km s$^{-1}$)",
                 "fwhm_13CN": r"$\Delta V_{^{13}\rm CN}$ (km s$^{-1}$)",
                 "fwhm_L": r"$\Delta V_L$ (km s$^{-1}$)",
-                "tau_peak_12CN": r"$\tau_{0, \rm CN}$",
-                "tau_peak_13CN": r"$\tau_{0, ^{13}\rm CN}$",
+                "tau_12CN": r"$\tau_{\rm CN}$",
+                "tau_13CN": r"$\tau_{^{13}\rm CN}$",
                 "tau_total_12CN": r"$\tau_{\rm tot, CN}$",
-                "tau_total_13CN": r"$\tau_{\rm tot, $^{13}$CN}$",
-                "log10_13C_12C_ratio": r"$\log_{10} ^{13}{\rm C}/^{12}{\rm C}$",
+                "tau_total_13CN": r"$\tau_{{\rm tot}, ^{13}\rm CN}$",
+                "log10_12C_13C_ratio": r"$\log_{10} ^{12}{\rm C}/^{13}{\rm C}$",
             }
         )
 
     def add_priors(
         self,
-        prior_log10_N0_12CN: Iterable[float] = [12.0, 1.0],
-        prior_log10_N0_13CN: Iterable[float] = [10.0, 1.0],
+        prior_log10_N0_12CN: Iterable[float] = [13.0, 1.0],
+        prior_log10_N0_13CN: Iterable[float] = [11.0, 1.0],
         prior_log10_Tex: Iterable[float] = [1.75, 0.25],
         prior_log10_Tkin: Iterable[float] = [1.75, 0.25],
         prior_velocity: Iterable[float] = [0.0, 10.0],
-        prior_fwhm_nonthermal: float = None,
+        prior_fwhm_nonthermal: float = 0.0,
         prior_fwhm_L: float = 1.0,
         prior_rms: Optional[dict[str, float]] = None,
         prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
@@ -137,10 +138,10 @@ class CNRatioModel(BaseModel):
         Parameters
         ----------
         prior_log10_N0_12CN : Iterable[float], optional
-            Prior distribution on CN ground state column density, by default [12.0, 1.0], where
+            Prior distribution on CN ground state column density, by default [13.0, 1.0], where
             log10_N0_12CN ~ Normal(mu=prior[0], sigma=prior[1])
         prior_log10_N0_13CN : Iterable[float], optional
-            Prior distribution on 13CN ground state column density, by default [10.0, 1.0], where
+            Prior distribution on 13CN ground state column density, by default [11.0, 1.0], where
             log10_N0_13CN ~ Normal(mu=prior[0], sigma=prior[1])
         prior_log10_Tex : Iterable[float], optional
             Prior distribution on log10 cloud mean excitation temperature (K), by
@@ -154,9 +155,9 @@ class CNRatioModel(BaseModel):
             Prior distribution on centroid velocity (km s-1), by default [0.0, 10.0], where
             velocity ~ Normal(mu=prior[0], sigma=prior[1])
         prior_fwhm_nonthermal : float, optional
-            Prior distribution on non-thermal FWHM (km s-1), by default None, where
+            Prior distribution on non-thermal FWHM (km s-1), by default 0.0, where
             fwhm_nonthermal ~ HalfNormal(sigma=prior_fwhm_nonthermal)
-            If None, assume no non-thermal broadening.
+            If 0.0, assume no non-thermal broadening.
         prior_fwhm_L : Optional[float], optional
             Prior distribution on the latent pseudo-Voight Lorentzian profile line width (km/s),
             by default 1.0, where
@@ -365,8 +366,8 @@ class CNRatioModel(BaseModel):
                 dims="cloud",
             )
 
-            # 13C/12C ratio (shape: clouds)
-            _ = pm.Deterministic("log10_13C_12C_ratio", log10_N_13CN - log10_N_12CN, dims="cloud")
+            # 12C/13C ratio (shape: clouds)
+            _ = pm.Deterministic("log10_12C_13C_ratio", log10_N_12CN - log10_N_13CN, dims="cloud")
 
             # Velocity (km/s; shape: clouds)
             if ordered:
@@ -400,7 +401,7 @@ class CNRatioModel(BaseModel):
 
             # Non-thermal FWHM (km/s; shape: clouds)
             fwhm_nonthermal = 0.0
-            if prior_fwhm_nonthermal is not None:
+            if prior_fwhm_nonthermal > 0:
                 fwhm_nonthermal_norm = pm.HalfNormal("fwhm_nonthermal_norm", sigma=1.0, dims="cloud")
                 fwhm_nonthermal = pm.Deterministic(
                     "fwhm_nonthermal", prior_fwhm_nonthermal * fwhm_nonthermal_norm, dims="cloud"
@@ -413,47 +414,39 @@ class CNRatioModel(BaseModel):
                     _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
 
             # Total (physical) FWHM (km/s; shape: clouds)
-            fwhm_12CN = pm.Deterministic(
-                "fwhm_12CN", pt.sqrt(fwhm_thermal_12CN**2.0 + fwhm_nonthermal**2.0), dims="cloud"
-            )
-            fwhm_13CN = pm.Deterministic(
-                "fwhm_13CN", pt.sqrt(fwhm_thermal_13CN**2.0 + fwhm_nonthermal**2.0), dims="cloud"
-            )
+            _ = pm.Deterministic("fwhm_12CN", pt.sqrt(fwhm_thermal_12CN**2.0 + fwhm_nonthermal**2.0), dims="cloud")
+            _ = pm.Deterministic("fwhm_13CN", pt.sqrt(fwhm_thermal_13CN**2.0 + fwhm_nonthermal**2.0), dims="cloud")
 
             # Pseudo-Voigt profile latent variable (km/s)
             fwhm_L_norm = pm.HalfNormal("fwhm_L_norm", sigma=1.0)
-            fwhm_L = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
-
-            # line profile amplitude (km-1 s; shape: transitions, clouds)
-            line_profile_amplitude_12CN = physics.calc_line_profile_amplitude(fwhm_12CN, fwhm_L)
-            line_profile_amplitude_13CN = physics.calc_line_profile_amplitude(fwhm_13CN, fwhm_L)
+            _ = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
 
             # Get lower state column density for each transition (shape: transitions, clouds)
             Nl_12CN = pt.stack([10.0 ** log10_Nl_12CN[state_l] for state_l in self.mol_data_12CN["state_l"]])
             Nl_13CN = pt.stack([10.0 ** log10_Nl_13CN[state_l] for state_l in self.mol_data_13CN["state_l"]])
 
             # peak optical depths (shape: transitions, clouds)
-            tau_peak_12CN = pm.Deterministic(
-                "tau_peak_12CN",
+            tau_12CN = pm.Deterministic(
+                "tau_12CN",
                 physics.calc_optical_depth(
                     self.mol_data_12CN["Gu"][:, None],
                     self.mol_data_12CN["Gl"][:, None],
                     Nl_12CN,
                     log_boltz_factor_12CN,
-                    line_profile_amplitude_12CN,
+                    1.0,
                     self.mol_data_12CN["freq"][:, None],
                     self.mol_data_12CN["Aul"][:, None],
                 ),
                 dims=["transition_12CN", "cloud"],
             )
-            tau_peak_13CN = pm.Deterministic(
-                "tau_peak_13CN",
+            tau_13CN = pm.Deterministic(
+                "tau_13CN",
                 physics.calc_optical_depth(
                     self.mol_data_13CN["Gu"][:, None],
                     self.mol_data_13CN["Gl"][:, None],
                     Nl_13CN,
                     log_boltz_factor_13CN,
-                    line_profile_amplitude_13CN,
+                    1.0,
                     self.mol_data_13CN["freq"][:, None],
                     self.mol_data_13CN["Aul"][:, None],
                 ),
@@ -461,8 +454,8 @@ class CNRatioModel(BaseModel):
             )
 
             # total optical depth (shape: clouds)
-            _ = pm.Deterministic("tau_total_12CN", pt.sum(tau_peak_12CN, axis=0), dims="cloud")
-            _ = pm.Deterministic("tau_total_13CN", pt.sum(tau_peak_13CN, axis=0), dims="cloud")
+            _ = pm.Deterministic("tau_total_12CN", pt.sum(tau_12CN, axis=0), dims="cloud")
+            _ = pm.Deterministic("tau_total_13CN", pt.sum(tau_13CN, axis=0), dims="cloud")
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""
@@ -483,7 +476,7 @@ class CNRatioModel(BaseModel):
                 log_boltz_factor = self.model["log_boltz_factor_13CN"]
                 fwhm = self.model["fwhm_13CN"]
                 Tex = self.model["Tex_13CN"]
-            else:
+            else:  # pragma: no cover
                 raise ValueError(f"Invalid dataset label: {label}")
 
             # Derive optical depth spectra (shape: spectral, clouds)
