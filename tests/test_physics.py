@@ -27,8 +27,8 @@ def test_lorentzian():
     assert not np.any(np.isnan(y))
 
 
-def test_detailed_balance():
-    transitions_free, transition_l, transition_u = physics.detailed_balance(
+def test_balance():
+    transitions_free, transition_l, transition_u = physics.balance(
         _MOL_DATA, log10_N0=None, log_boltz_factor=None, verbose=False
     )
     assert len(transitions_free) > 0
@@ -36,7 +36,7 @@ def test_detailed_balance():
     assert len(transition_u) > 0
 
     log_boltz_factor = np.random.normal(size=len(_MOL_DATA["freq"]))
-    transitions_free, log10_Nl, log10_Nu = physics.detailed_balance(
+    transitions_free, log10_Nl, log10_Nu = physics.balance(
         _MOL_DATA, log10_N0=12.0, log_boltz_factor=log_boltz_factor, verbose=False
     )
     assert not np.any(np.isnan(log10_Nl.eval()))

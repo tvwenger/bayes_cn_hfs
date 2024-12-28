@@ -49,11 +49,11 @@ pip install -e .
 
 All models in `bayes_cn_hfs` apply the same physics and equations of radiative transfer.
 
-The hyperfine transition upper state column density is derived from the total column density and temperature assuming detailed balance and constant excitation temperature [(Magnum & Shirley, 2015, equation 31)](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract). For the HFS anomaly models `HFSAnomalyModel` and `CNRatioAnomalyModel`, the excitation temperature is allowed to vary between components, but the average cloud excitation temperature is used for the detailed balance calculation.
-
 The transition optical depth is taken from [Magnum & Shirley (2015) equation 29](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract).
 
 The radiative transfer is calculated explicitly assuming an off-source background temperature `bg_temp` (see below) similar to [Magnum & Shirley (2015) equation 23](https://ui.adsabs.harvard.edu/abs/2015PASP..127..266M/abstract). By default, the clouds are ordered from *nearest* to *farthest*, so optical depth effects (i.e., self-absorption) may be present.
+
+Non-LTE effects are modeled by considering the column densities of all states and self-consistently solving for the excitation temperature of each transition. There are two parameters that handle non-LTE effects. When `assume_LTE = True`, the average excitation temperature is fixed to that of the kinetic temperature of the cloud. This is the "strong LTE" assumption. Independently, hyperfine anomalies (i.e., different excitation temperatures for each hyperfine transition) can be modeled by setting a non-zero prior for the parameter `log_boltz_factor` (for `CNModel`) or `log_boltz_factor_12CN` (for `CNRatioModel`). When the prior for this parameter is zero, then the excitation temperatures of all transitions are the same (the constant excitation temperature (CTEX) assumption). When the prior for this parameter is positive, however, then the excitation temperatures of the different transitions need not be constant. One can still set `assume_LTE = True` and allow hyperfine anomalies. This is the "weak LTE" assumption.
 
 Notably, since these are *forward models*, we do not make assumptions regarding the optical depth or the Rayleigh-Jeans limit. These effects are *predicted* by the model. There is one exception: the `ordered` argument, [described below](#ordered).
 
@@ -61,7 +61,7 @@ Notably, since these are *forward models*, we do not make assumptions regarding 
 
 The models provided by `bayes_cn_hfs` are implemented in the [`bayes_spec`](https://github.com/tvwenger/bayes_spec) framework. `bayes_spec` assumes that the source of spectral line emission can be decomposed into a series of "clouds", each of which is defined by a set of model parameters. Here we define the models available in `bayes_cn_hfs`.
 
-## `HFSModel`
+## `CNModel`
 
 The basic model is `HFSModel`, a general purpose model for modelling any hyperfine spectral data. The model assumes that the emission can be explained by the radiative transfer of emission through a series of isothermal, homogeneous clouds (in local thermodynamic equilibrium, LTE) as well as a polynomial spectral baseline. The following diagram demonstrates the relationship between the free parameters (empty ellipses), deterministic quantities (rectangles), model predictions (filled ellipses), and observations (filled, round rectangles). Many of the parameters are internally normalized (and thus have names like `_norm`). The subsequent tables describe the model parameters in more detail.
 

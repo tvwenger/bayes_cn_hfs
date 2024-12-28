@@ -61,7 +61,7 @@ class CNModel(BaseModel):
         self.mol_data, self.mol_weight = supplement_mol_data(molecule, mol_data=mol_data)
 
         # Determine which transitions are used to populate state column densities
-        transition_free, _, _ = physics.detailed_balance(self.mol_data, log10_N0=None, verbose=self.verbose)
+        transition_free, _, _ = physics.balance(self.mol_data, log10_N0=None, verbose=self.verbose)
 
         # Add transitions and states to model
         coords = {
@@ -82,37 +82,39 @@ class CNModel(BaseModel):
         # Define TeX representation of each parameter
         self.var_name_map.update(
             {
-                "log10_N0": r"$\log_{10} N_0$ (cm$^{-2}$)",
-                "log10_Tkin": r"$\log_{10} T_{\rm kin}$ (K)",
-                "log10_Tex_mean": r"$\langle\log_{10} T_{\rm ex}\rangle$ (K)",
-                "Tex": r"$T_{\rm ex}$ (K)",
-                "log_boltz_factor": r"$\ln B$",
-                "log_boltz_factor_mean": r"$\langle\ln B\rangle$",
-                "log_boltz_factor_sigma": r"$\sigma_{\ln B}$",
-                "log10_Nl": r"$\log_{10} N_l$ (cm$^{-2}$)",
-                "log10_N": r"$\log_{10} N_{\rm tot}$ (cm$^{-2}$)",
                 "velocity": r"$v_{\rm LSR}$ (km s$^{-1}$)",
+                "log10_Tkin": r"$\log_{10} T_{\rm kin}$ (K)",
                 "fwhm_thermal": r"$\Delta V_{\rm th}$ (km s$^{-1}$)",
                 "fwhm_nonthermal": r"$\Delta V_{\rm nt}$ (km s$^{-1}$)",
                 "fwhm": r"$\Delta V$ (km s$^{-1}$)",
                 "fwhm_L": r"$\Delta V_L$ (km s$^{-1}$)",
+                "log10_N0": r"$\log_{10} N_0$ (cm$^{-2}$)",
+                "log10_Tex": r"$\log_{10} T_{\rm ex}$ (K)",
+                "Tex": r"$T_{\rm ex}$ (K)",
+                "log10_inv_boltz_factor": r"$\log_{10} B^{-1}$",
+                "log10_Nl": r"$\log_{10} N_l$ (cm$^{-2}$)",
+                "log10_Nu": r"$\log_{10} N_u$ (cm$^{-2}$)",
+                "log10_N": r"$\log_{10} N_{\rm tot}$ (cm$^{-2}$)",
                 "tau": r"$\tau$",
                 "tau_total": r"$\tau_{\rm tot}$",
+                "TR": r"$T_R$ (K)",
             }
         )
 
     def add_priors(
         self,
-        prior_log10_N0: Iterable[float] = [13.0, 1.0],
-        prior_log10_Tex: Iterable[float] = [1.75, 0.25],
-        prior_log10_Tkin: Iterable[float] = [1.75, 0.25],
+        prior_log10_N0: Iterable[float] = [13.0, 0.25],
+        prior_log10_Tkin: Iterable[float] = [1.5, 0.5],
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_fwhm_nonthermal: float = 0.0,
         prior_fwhm_L: float = 1.0,
         prior_rms: Optional[dict[str, float]] = None,
         prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
         assume_LTE: bool = True,
-        prior_log_boltz_factor_sigma: float = 0.0,
+        prior_log10_Tex: Iterable[float] = [1.5, 0.5],
+        assume_CTEX: bool = True,
+        prior_log10_inv_boltz_factor: float = 5.0,
+        allow_masers: bool = False,
         fix_log10_Tkin: Optional[float] = None,
         ordered: bool = False,
     ):
@@ -121,15 +123,11 @@ class CNModel(BaseModel):
         Parameters
         ----------
         prior_log10_N0 : Iterable[float], optional
-            Prior distribution on ground state column density, by default [13.0, 1.0], where
+            Prior distribution on ground state column density, by default [13.0, 0.25], where
             log10_N0 ~ Normal(mu=prior[0], sigma=prior[1])
-        prior_log10_Tex : Iterable[float], optional
-            Prior distribution on log10 cloud mean excitation temperature (K), by
-            default [1.75, 0.25], where
-            log10_Tex_mean ~ Normal(mu=prior[0], sigma=prior[1])
         prior_log10_Tkin : Iterable[float], optional
             Prior distribution on log10 cloud kinetic temperature (K), by default
-            [1.75, 0.25], where
+            [1.5, 0.5], where
             log10_Tkin ~ Normal(mu=prior[0], sigma=prior[1])
         prior_velocity : Iterable[float], optional
             Prior distribution on centroid velocity (km s-1), by default [0.0, 10.0], where
@@ -139,7 +137,7 @@ class CNModel(BaseModel):
             fwhm_nonthermal ~ HalfNormal(sigma=prior_fwhm_nonthermal)
             If 0.0, assume no non-thermal broadening.
         prior_fwhm_L : float, optional
-            Prior distribution on the latent pseudo-Voight Lorentzian profile line width (km/s),
+            Prior distribution on the pseudo-Voight Lorentzian profile line width (km/s),
             by default 1.0, where
             fwhm_L ~ HalfNormal(sigma=prior_fwhm_L)
             Setting this parameter to the typical separation between spectral lines aids in
@@ -154,22 +152,28 @@ class CNModel(BaseModel):
             Keys are dataset names and values are lists of length `baseline_degree+1`. If None, use
             `[1.0]*(baseline_degree+1)` for each dataset.
         assume_LTE : bool, optional
-            Assume local thermodynamic equilibrium by fixing the cloud mean excitation
-            temperature to the cloud kinetic temperature, by default True. If True,
-            the value passed to prior_log10_Tex has no effect.
-        prior_log_boltz_factor_sigma : float, optional
-            Prior distribution on log Boltzmann factor = -h*freq/(k*Tex) anomaly, by default
-            0.0, where
-            log_boltz_factor_sigma ~ HalfNormal(sigma=prior)
-            log_boltz_factor ~ normal(mu=log_boltz_factor_mean, sigma=log_boltz_factor_sigma)
-            If 0.0, the Boltzmann factor for each transition is fixed based on the mean cloud
-            excitation temperature. Note that setting this value greater than zero will allow
-            for population inversions (i.e., negative excitation temperatures).
+            Assume local thermodynamic equilibrium by fixing the excitation temperature of every
+            transition to the cloud kinetic temperature, by default True. assume_LTE = True implies
+            assume_CTEX = True.
+        prior_log10_Tex : Iterable[float], optional
+            Prior distribution on CTEX log10 excitation temperature (K), by
+            default [1.5, 0.5], where
+            log10_Tex ~ Normal(mu=prior[0], sigma=prior[1])
+            This parameter has no effect when assume_LTE = True or when assume_CTEX = False.
+        assume_CTEX : bool, optional
+            Assume that every transition has the same excitation temperature, by default True.
+            If False, use derive the excitation temperature of every transition.
+            assume_LTE = True implies assume_CTEX = True.
+        prior_log10_inv_boltz_factor : float, optional
+            Prior distribution on free transition log10 inverse Boltzmann factors, by default 5.0, where
+            log10_inv_boltz_factor_free ~ Gamma(alpha=2.0, beta=prior)
+            This parameter has no effect when assume_LTE = True or when assume_CTEX = False.
+            This is a convenient parameterization because it prevents non-physical solutions.
+        allow_masers : bool, optional
+            If True, allow derived transition excitation temperatures to be negative, by default False.
+            This parameter has no effect when assume_LTE = True or when assume_CTEX = False.
         fix_log10_Tkin : Optional[float], optional
-            Fix the log10 cloud kinetic temperature at this value (K), by default None. The posterior
-            distribution is conditioned on this value of the kinetic temperature, which could bias the
-            inference (especially if assume_LTE = True) but improve numerical stability and
-            sampling efficiency.
+            Fix the log10 cloud kinetic temperature at this value (K), by default None.
         ordered : bool, optional
             If True, assume ordered velocities (optically thin assumption), by default False.
             If True, the prior distribution on the velocity becomes
@@ -179,135 +183,10 @@ class CNModel(BaseModel):
         # add polynomial baseline priors
         super().add_baseline_priors(prior_baseline_coeffs=prior_baseline_coeffs)
 
+        if assume_LTE and not assume_CTEX:
+            raise ValueError("Can't assume LTE and not CTEX")
+
         with self.model:
-            # Ground state column density (shape: clouds)
-            log10_N0_norm = pm.Normal("log10_N0_norm", mu=0.0, sigma=1.0, dims=["cloud"])
-            log10_N0 = pm.Deterministic(
-                "log10_N0", prior_log10_N0[0] + prior_log10_N0[1] * log10_N0_norm, dims=["cloud"]
-            )
-
-            # kinetic temperature (K; shape: clouds)
-            if fix_log10_Tkin:
-                # log10_Tkin is fixed
-                log10_Tkin = pm.Data("log10_Tkin", np.ones(self.n_clouds) * fix_log10_Tkin, dims="cloud")
-            else:
-                log10_Tkin_norm = pm.Normal("log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud")
-                log10_Tkin = pm.Deterministic(
-                    "log10_Tkin",
-                    prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
-                    dims="cloud",
-                )
-
-            # Cloud average excitation temperature (K) (shape: clouds)
-            if assume_LTE:
-                # Excitation temperature is fixed at kinetic temperature
-                log10_Tex_mean = pm.Deterministic("log10_Tex_mean", log10_Tkin, dims="cloud")
-            else:
-                # Excitation temperature is a free parameter
-                log10_Tex_mean_norm = pm.Normal("log10_Tex_mean_norm", mu=0.0, sigma=1.0, dims="cloud")
-                log10_Tex_mean = pm.Deterministic(
-                    "log10_Tex_mean", prior_log10_Tex[0] + prior_log10_Tex[1] * log10_Tex_mean_norm, dims="cloud"
-                )
-
-            if prior_log_boltz_factor_sigma == 0.0:
-                # Excitation temperature (K) (shape: transitions, clouds)
-                # assumed constant across transitions
-                Tex = pm.Deterministic(
-                    "Tex",
-                    pt.repeat(10.0 ** log10_Tex_mean[None, :], len(self.mol_data["freq"]), 0),
-                    dims=["transition", "cloud"],
-                )
-
-                # log Boltzmann factors = log(gl*Nu) - log(gu*Nl) = -h*freq/(k*Tex) (shape: transitions, clouds)
-                log_boltz_factor = pm.Deterministic(
-                    "log_boltz_factor",
-                    physics.calc_log_boltz_factor(self.mol_data["freq"][:, None], Tex),
-                    dims=["transition", "cloud"],
-                )
-
-                # State column densities (cm2; shape: states, clouds)
-                _, log10_Nl, log10_Nu = physics.detailed_balance(
-                    self.mol_data, log10_N0=log10_N0, log_boltz_factor=log_boltz_factor, verbose=False
-                )
-            else:
-                # Boltzmann factor anomaly (shape: clouds)
-                log_boltz_factor_sigma_norm = pm.HalfNormal("log_boltz_factor_sigma_norm", sigma=1.0, dims="cloud")
-                log_boltz_factor_sigma = pm.Deterministic(
-                    "log_boltz_factor_sigma", prior_log_boltz_factor_sigma * log_boltz_factor_sigma_norm, dims="cloud"
-                )
-
-                # Boltzmann factors derived from cloud mean excitation temperature (shape: transitions_free, clouds)
-                log_boltz_factor_mean = pm.Deterministic(
-                    "log_boltz_factor_mean",
-                    physics.calc_log_boltz_factor(
-                        np.array(self.model.coords["transition_free"])[:, None], 10.0**log10_Tex_mean
-                    ),
-                    dims=["transition_free", "cloud"],
-                )
-
-                # Free log Boltzmann factors = log(gl*Nu) - log(gu*Nl) = -h*freq/(k*Tex) (shape: transitions_free, clouds)
-                log_boltz_factor_free_norm = pm.Normal(
-                    "log_boltz_factor_free_norm", mu=0.0, sigma=1.0, dims=["transition_free", "cloud"]
-                )
-                log_boltz_factor_free = pm.Deterministic(
-                    "log_boltz_factor_free",
-                    log_boltz_factor_mean + log_boltz_factor_sigma * log_boltz_factor_free_norm,
-                    dims=["transition_free", "cloud"],
-                )
-
-                # State column densities
-                log_boltz_factor = [
-                    (
-                        log_boltz_factor_free[self.model.coords["transition_free"].index(freq)]
-                        if freq in self.model.coords["transition_free"]
-                        else None
-                    )
-                    for freq in self.mol_data["freq"]
-                ]
-                _, log10_Nl, log10_Nu = physics.detailed_balance(
-                    self.mol_data, log10_N0=log10_N0, log_boltz_factor=log_boltz_factor, verbose=False
-                )
-
-                # log Boltzman factors (shape: transitions, clouds)
-                log_boltz_factor = pm.Deterministic(
-                    "log_boltz_factor",
-                    pt.stack(
-                        [
-                            (
-                                log_boltz_factor_free[self.model.coords["transition_free"].index(freq)]
-                                if freq in self.model.coords["transition_free"]
-                                else pt.log(10.0) * (pt.log10(Gl / Gu) + log10_Nu[state_u] - log10_Nl[state_l])
-                            )
-                            for freq, Gl, Gu, state_l, state_u in zip(
-                                self.mol_data["freq"],
-                                self.mol_data["Gl"],
-                                self.mol_data["Gu"],
-                                self.mol_data["state_l"],
-                                self.mol_data["state_u"],
-                            )
-                        ]
-                    ),
-                    dims=["transition", "cloud"],
-                )
-
-                # Excitation temperarature (K; shape: transitions, clouds)
-                Tex = pm.Deterministic(
-                    "Tex",
-                    physics.calc_Tex(self.mol_data["freq"][:, None], log_boltz_factor),
-                    dims=["transition", "cloud"],
-                )
-
-            # State column densities (cm-2; shape: states, clouds)
-            log10_Nl = pm.Deterministic("log10_Nl", pt.stack(log10_Nl), dims=["state_l", "cloud"])
-            log10_Nu = pt.stack(log10_Nu)
-
-            # Total column density across all states (cm-2; shape: clousd)
-            _ = pm.Deterministic(
-                "log10_N",
-                pt.log10(pt.sum(10.0**log10_Nl, axis=0) + pt.sum(10.0**log10_Nu, axis=0)),
-                dims="cloud",
-            )
-
             # Velocity (km/s; shape: clouds)
             if ordered:
                 velocity_offset_norm = pm.Gamma("velocity_norm", alpha=2.0, beta=1.0, dims="cloud")
@@ -330,6 +209,18 @@ class CNModel(BaseModel):
                     dims="cloud",
                 )
 
+            # kinetic temperature (K; shape: clouds)
+            if fix_log10_Tkin:
+                # log10_Tkin is fixed
+                log10_Tkin = pm.Data("log10_Tkin", np.ones(self.n_clouds) * fix_log10_Tkin, dims="cloud")
+            else:
+                log10_Tkin_norm = pm.Normal("log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud")
+                log10_Tkin = pm.Deterministic(
+                    "log10_Tkin",
+                    prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
+                    dims="cloud",
+                )
+
             # Thermal FWHM (km/s; shape: clouds)
             fwhm_thermal = pm.Deterministic(
                 "fwhm_thermal", physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight), dims="cloud"
@@ -343,12 +234,6 @@ class CNModel(BaseModel):
                     "fwhm_nonthermal", prior_fwhm_nonthermal * fwhm_nonthermal_norm, dims="cloud"
                 )
 
-            # Spectral rms (K)
-            if prior_rms is not None:
-                for label in self.data.keys():
-                    rms_norm = pm.HalfNormal(f"rms_{label}_norm", sigma=1.0)
-                    _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms)
-
             # Total (physical) FWHM (km/s; shape: clouds)
             _ = pm.Deterministic("fwhm", pt.sqrt(fwhm_thermal**2.0 + fwhm_nonthermal**2.0), dims="cloud")
 
@@ -356,27 +241,163 @@ class CNModel(BaseModel):
             fwhm_L_norm = pm.HalfNormal("fwhm_L_norm", sigma=1.0)
             _ = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
 
-            # Get lower state column density for each transition (shape: transitions, clouds)
-            Nl = pt.stack([10.0 ** log10_Nl[state_l] for state_l in self.mol_data["state_l"]])
+            # Spectral rms (K)
+            if prior_rms is not None:
+                for label in self.data.keys():
+                    rms_norm = pm.HalfNormal(f"rms_{label}_norm", sigma=1.0)
+                    _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms[label])
 
-            # total optical depths (shape: transitions, clouds)
-            # set line_profile = 1.0 to calculate total optical depth
+            # Ground state column density (shape: clouds)
+            log10_N0_norm = pm.Normal("log10_N0_norm", mu=0.0, sigma=1.0, dims=["cloud"])
+            log10_N0 = pm.Deterministic(
+                "log10_N0", prior_log10_N0[0] + prior_log10_N0[1] * log10_N0_norm, dims=["cloud"]
+            )
+
+            if assume_LTE:
+                # Excitation temperature is fixed at kinetic temperature
+                Tex = pm.Deterministic(
+                    "Tex",
+                    pt.repeat(10.0 ** log10_Tkin[None, :], len(self.mol_data["freq"]), 0),
+                    dims=["transition", "cloud"],
+                )
+
+                # log10 inverse Boltzmann factors (shape: transitions, clouds)
+                log10_inv_boltz_factor = pm.Deterministic(
+                    "log10_inv_boltz_factor",
+                    physics.calc_log10_inv_boltz_factor(self.mol_data["freq"][:, None], Tex),
+                    dims=["transition", "cloud"],
+                )
+
+                # State column densities (cm2; shape: states, clouds)
+                _, log10_Nl, log10_Nu = physics.balance(
+                    self.mol_data, log10_N0=log10_N0, log10_inv_boltz_factor=log10_inv_boltz_factor, verbose=False
+                )
+            elif assume_CTEX:
+                # Excitation temperature (K) (shape: transitions, clouds)
+                log10_Tex_norm = pm.Normal("log10_Tex_norm", mu=0.0, sigma=1.0, dims="cloud")
+                log10_Tex = pm.Deterministic(
+                    "log10_Tex", prior_log10_Tex[0] + prior_log10_Tex[1] * log10_Tex_norm, dims="cloud"
+                )
+
+                # assumed constant across transitions
+                Tex = pm.Deterministic(
+                    "Tex",
+                    pt.repeat(10.0 ** log10_Tex[None, :], len(self.mol_data["freq"]), 0),
+                    dims=["transition", "cloud"],
+                )
+
+                # log10 inverse Boltzmann factors (shape: transitions, clouds)
+                log10_inv_boltz_factor = pm.Deterministic(
+                    "log10_inv_boltz_factor",
+                    physics.calc_log10_inv_boltz_factor(self.mol_data["freq"][:, None], Tex),
+                    dims=["transition", "cloud"],
+                )
+
+                # State column densities (cm2; shape: states, clouds)
+                _, log10_Nl, log10_Nu = physics.balance(
+                    self.mol_data, log10_N0=log10_N0, log10_inv_boltz_factor=log10_inv_boltz_factor, verbose=False
+                )
+            else:
+                # Non-LTE case
+                # Boltzmann factor = gL*nU/(gU*nL) < 1 for Tex > 0
+                #                                  > 1 for Tex < 0
+                #                                  = 0 for Tex = inf
+                # Assuming no masers, we can place a Beta distribution prior on Boltzmann factor to
+                # prevent Tex = 0 and Tex = inf solutions. We approximate log10(Beta-1) by a Gamma distribution.
+                # log10 inverse Boltzmann factor (shape: transition_free, clouds)
+                log10_inv_boltz_factor_free = pm.Gamma(
+                    "log10_inv_boltz_factor_free",
+                    alpha=2.0,
+                    beta=prior_log10_inv_boltz_factor,
+                    dims=["transition_free", "cloud"],
+                )
+
+                # Derive other states
+                log10_inv_boltz_factor = [
+                    (
+                        log10_inv_boltz_factor_free[self.model.coords["transition_free"].index(freq)]
+                        if freq in self.model.coords["transition_free"]
+                        else None
+                    )
+                    for freq in self.mol_data["freq"]
+                ]
+                _, log10_Nl, log10_Nu = physics.balance(
+                    self.mol_data, log10_N0=log10_N0, log10_inv_boltz_factor=log10_inv_boltz_factor, verbose=False
+                )
+
+                # Derive remaining inverse Boltzmann factors (shape: transitions, clouds)
+                log10_inv_boltz_factor = pm.Deterministic(
+                    "log10_inv_boltz_factor",
+                    pt.stack(
+                        [
+                            (
+                                log10_inv_boltz_factor[idx]
+                                if log10_inv_boltz_factor[idx] is not None
+                                else log10_Nl[state_l] - log10_Nu[state_u] + np.log10(Gu / Gl)
+                            )
+                            for idx, (Gl, Gu, state_l, state_u) in enumerate(
+                                zip(
+                                    self.mol_data["Gl"],
+                                    self.mol_data["Gu"],
+                                    self.mol_data["state_l"],
+                                    self.mol_data["state_u"],
+                                )
+                            )
+                        ]
+                    ),
+                    dims=["transition", "cloud"],
+                )
+
+                # Prevent negative excitation temperatures
+                if not allow_masers:
+                    _ = pm.Potential("restrict_masers", pt.switch(pt.gt(log10_inv_boltz_factor, 0.0), 0.0, -np.inf))
+
+                # Derive excitation temperatures (shape: transitions, clouds)
+                Tex = pm.Deterministic(
+                    "Tex",
+                    physics.calc_Tex(self.mol_data["freq"][:, None], log10_inv_boltz_factor),
+                    dims=["transition", "cloud"],
+                )
+
+            # State column densities (cm-2; shape: states, clouds)
+            log10_Nl = pm.Deterministic("log10_Nl", log10_Nl, dims=["state_l", "cloud"])
+            log10_Nu = pm.Deterministic("log10_Nu", log10_Nu, dims=["state_u", "cloud"])
+
+            # Total column density across all states (cm-2; shape: clouds)
+            _ = pm.Deterministic(
+                "log10_N",
+                pt.log10(pt.sum(10.0**log10_Nl, axis=0) + pt.sum(10.0**log10_Nu, axis=0)),
+                dims="cloud",
+            )
+
+            # State column densities for each transition (cm-2; shape: transitions, clouds)
+            Nl = pt.stack([10.0 ** log10_Nl[state_l] for state_l in self.mol_data["state_l"]])
+            Nu = pt.stack([10.0 ** log10_Nu[state_u] for state_u in self.mol_data["state_u"]])
+
+            # Optical depth (shape: transitions, clouds)
             tau = pm.Deterministic(
                 "tau",
                 physics.calc_optical_depth(
-                    self.mol_data["Gu"][:, None],
-                    self.mol_data["Gl"][:, None],
-                    Nl,
-                    log_boltz_factor,
-                    1.0,
                     self.mol_data["freq"][:, None],
+                    self.mol_data["Gl"][:, None],
+                    self.mol_data["Gu"][:, None],
+                    Nl,
+                    Nu,
                     self.mol_data["Aul"][:, None],
+                    1.0,  # integrated line profile
                 ),
                 dims=["transition", "cloud"],
             )
 
-            # total optical depth (shape: clouds)
+            # Total optical depth (shape: clouds)
             _ = pm.Deterministic("tau_total", pt.sum(tau, axis=0), dims="cloud")
+
+            # Radiation temperature (K; shape: transitions, clouds)
+            _ = pm.Deterministic(
+                "TR",
+                physics.calc_TR(self.mol_data["freq"][:, None], 10.0**log10_inv_boltz_factor),
+                dims=["transition", "cloud"],
+            )
 
     def add_likelihood(self):
         """Add likelihood to the model. SpecData key must be "observation"."""
@@ -385,15 +406,11 @@ class CNModel(BaseModel):
 
         # Predict all spectra
         for label, dataset in self.data.items():
-            # Get lower state column density for each transition (shape: transitions, clouds)
-            Nl = pt.stack([10.0 ** self.model["log10_Nl"][state_l] for state_l in self.mol_data["state_l"]])
-
-            # Derive optical depth spectra (shape: spectral, clouds)
-            tau = physics.predict_tau(
+            # Optical depth spectra (shape: spectral, transitions, clouds)
+            tau_spectra = physics.predict_tau_spectra(
                 self.mol_data,
                 dataset.spectral,
-                Nl,
-                self.model["log_boltz_factor"],
+                self.model["tau"],
                 self.model["velocity"],
                 self.model["fwhm"],
                 self.model["fwhm_L"],
@@ -405,8 +422,8 @@ class CNModel(BaseModel):
                 / self.Feff
                 * physics.radiative_transfer(
                     dataset.spectral,
-                    tau,
-                    self.model["Tex"],
+                    tau_spectra,
+                    self.model["TR"],
                     self.bg_temp,
                 )
             )

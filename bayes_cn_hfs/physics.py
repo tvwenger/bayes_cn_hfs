@@ -14,9 +14,8 @@ import pytensor.tensor as pt
 
 import astropy.constants as c
 
-_K_B = c.k_B.to("erg K-1").value
-_H = c.h.to("erg MHz-1").value
-_C = c.c.to("km/s").value
+_H_K_B_K_MHz = (c.h / c.k_B).to("K MHz-1").value  # h/k_B
+_C_KMS = c.c.to("km/s").value
 _C_CM_MHZ = c.c.to("cm MHz").value
 
 
@@ -32,8 +31,8 @@ def gaussian(x: float, center: float, fwhm: float) -> float:
     :return: Gaussian evaluated at :param:x
     :rtype: float
     """
-    return pt.exp(-4.0 * pt.log(2.0) * (x - center) ** 2.0 / fwhm**2.0) * pt.sqrt(
-        4.0 * pt.log(2.0) / (np.pi * fwhm**2.0)
+    return pt.exp(-4.0 * np.log(2.0) * (x - center) ** 2.0 / fwhm**2.0) * pt.sqrt(
+        4.0 * np.log(2.0) / (np.pi * fwhm**2.0)
     )
 
 
@@ -52,14 +51,14 @@ def lorentzian(x: float, center: float, fwhm: float) -> float:
     return fwhm / (2.0 * np.pi) / ((x - center) ** 2.0 + (fwhm / 2.0) ** 2.0)
 
 
-def detailed_balance(
+def balance(
     mol_data: dict,
     log10_N0: Optional[float] = None,
-    log_boltz_factor: Optional[Iterable[float]] = None,
+    log10_inv_boltz_factor: Optional[Iterable[float]] = None,
     verbose: bool = False,
 ):
-    """Determine which transitions constrain which states, and optionally apply detailed balance
-    to derive state column densities.
+    """Determine which transitions constrain which states, and optionally derive the other
+    state column densities from the ground state column density.
 
     Parameters
     ----------
@@ -68,8 +67,8 @@ def detailed_balance(
     log10_N0 : Optional[float], optional
         Ground state column density, by default None. If not None, then the return values
         for constraint_l and constraint_u are populated with the column densities of each state.
-    log_boltz_factor : Optional[Iterable[float]], optional
-        Log Boltzmann factor for each transition, by default None. Only used if log10_N0 is not
+    log10_inv_boltz_factor : Optional[Iterable[float]], optional
+        Log10 inverse Boltzmann factor for each transition, by default None. Only used if log10_N0 is not
         None.
     verbose : bool, optional
         If True, print information
@@ -102,15 +101,15 @@ def detailed_balance(
     transition_used = [False] * len(mol_data["freq"])
     while None in constraint_l + constraint_u:
         for i, (state_l, state_u) in enumerate(zip(mol_data["state_l"], mol_data["state_u"])):
-            # check if either lower or upper state is populated
+            # check if either lower state is populated and upper state is not
             if constraint_l[state_l] is not None and constraint_u[state_u] is None:
                 constraint_u[state_u] = (
                     i
                     if log10_N0 is None
                     else (
-                        log_boltz_factor[i] / pt.log(10.0)
-                        + constraint_l[state_l]
-                        + pt.log10(mol_data["Gu"][i] / mol_data["Gl"][i])
+                        constraint_l[state_l]
+                        - log10_inv_boltz_factor[i]
+                        + np.log10(mol_data["Gu"][i] / mol_data["Gl"][i])
                     )
                 )
                 transition_used[i] = True
@@ -119,14 +118,15 @@ def detailed_balance(
                         f"Transition {mol_data['freq'][i]} is constraining upper state "
                         + f"{state_u} from lower state {state_l}"
                     )
+            # check if upper state is populated and lower state is not
             elif constraint_l[state_l] is None and constraint_u[state_u] is not None:
                 constraint_l[state_l] = (
                     i
                     if log10_N0 is None
                     else (
-                        -log_boltz_factor[i] / pt.log(10.0)
-                        + constraint_u[state_u]
-                        + pt.log10(mol_data["Gl"][i] / mol_data["Gu"][i])
+                        constraint_u[state_u]
+                        + log10_inv_boltz_factor[i]
+                        - np.log10(mol_data["Gu"][i] / mol_data["Gl"][i])
                     )
                 )
                 transition_used[i] = True
@@ -145,7 +145,7 @@ def detailed_balance(
         print(f"Free Tex transitions: {transition_free}")
         print(f"Derived Tex transitions: {transition_derived}")
 
-    return transition_free, constraint_l, constraint_u
+    return transition_free, pt.stack(constraint_l), pt.stack(constraint_u)
 
 
 def calc_frequency(freq: float, velocity: float) -> float:
@@ -163,7 +163,7 @@ def calc_frequency(freq: float, velocity: float) -> float:
     float
         Radio-defined Doppler frequency
     """
-    return freq * (1.0 - velocity / _C)
+    return freq * (1.0 - velocity / _C_KMS)
 
 
 def calc_fwhm_freq(freq: float, fwhm: float) -> float:
@@ -181,7 +181,7 @@ def calc_fwhm_freq(freq: float, fwhm: float) -> float:
     float
         FWHM line width (MHz) in frequency units (shape C x N)
     """
-    return freq * fwhm / _C
+    return freq * fwhm / _C_KMS
 
 
 def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
@@ -205,8 +205,8 @@ def calc_thermal_fwhm(kinetic_temp: float, weight: float) -> float:
     return const * pt.sqrt(kinetic_temp / weight)
 
 
-def calc_log_boltz_factor(freq: float, Tex: float) -> float:
-    """Evaluate the log Boltzmann factor from a given excitation temperature.
+def calc_log10_inv_boltz_factor(freq: float, Tex: float) -> float:
+    """Evaluate the log10 inverse Boltzmann factor from a given excitation temperature.
 
     Parameters
     ----------
@@ -218,27 +218,28 @@ def calc_log_boltz_factor(freq: float, Tex: float) -> float:
     Returns
     -------
     float
-        log Boltzmann factor = log(gl*Nu) - log(gu*Nl) = -h*freq/(k*Tex)
+        log10 inverse Boltzmann factor
     """
-    return -_H * freq / (_K_B * Tex)
+    return _H_K_B_K_MHz * freq / Tex * np.log10(np.e)
 
 
-def calc_Tex(freq: float, log_boltz_factor: float) -> float:
+def calc_Tex(freq: float, log10_inv_boltz_factor: float) -> float:
     """Evaluate the excitation temperature from a given Boltzmann factor.
 
     Parameters
     ----------
     freq : float
         Frequency (MHz)
-    log_boltz_factor : float
-        log Boltzmann factor = -h*freq/(k*Tex)
+    log10_inv_boltz_factor : float
+        log10 inverse Boltzmann factor = log10(exp(h*freq/(k*Tex)))
+        = h*freq/(k*Tex) * log10(e)
 
     Returns
     -------
     float
         Excitation temperature
     """
-    return -_H * freq / (_K_B * log_boltz_factor)
+    return _H_K_B_K_MHz * freq / log10_inv_boltz_factor * np.log10(np.e)
 
 
 def calc_pseudo_voigt(
@@ -271,7 +272,7 @@ def calc_pseudo_voigt(
         Line profile (MHz-1; shape S x C x N)
     """
     channel_size = pt.abs(freq_axis[1] - freq_axis[0])
-    channel_fwhm = 4.0 * pt.log(2.0) * channel_size / np.pi
+    channel_fwhm = 4.0 * np.log(2.0) * channel_size / np.pi
     fwhm_conv = pt.sqrt(fwhm**2.0 + channel_fwhm**2.0 + fwhm_L[:, None] ** 2.0)
     fwhm_L_frac = fwhm_L[:, None] / fwhm_conv
     eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
@@ -287,55 +288,71 @@ def calc_pseudo_voigt(
 
 
 def calc_optical_depth(
-    gu: float,
-    gl: float,
-    Nl: float,
-    log_boltz_factor: float,
-    line_profile: float,
     freq: float,
+    gl: float,
+    gu: float,
+    Nl: float,
+    Nu: float,
     Aul: float,
+    line_profile: float,
 ) -> float:
-    """Evaluate the optical depth spectra, from Mangum & Shirley eq. 29
-    Pass line_profile = 1.0 to evaluate the total (integrated) optical depth.
+    """Evaluate the total optical depth assuming a homogeneous medium. This
+    is the integral of the absorption coefficient (Condon & Ransom eq. 7.55)
 
     Parameters
     ----------
+    freq: float
+        Transition frequency (MHz)
+    gl: float
+        Lower state degeneracy
     gu : float
-        Upper state degeneracy (shape C)
-    gl : float
-        Lower state degeneracy (shape C)
+        Upper state degeneracy
     Nl : float
-        Lower state column densities (shape C x N)
-    log_boltz_factor : float
-        log Boltzmann factor (shape C x N)
-    line_profile : float
-        Line profile (MHz-1; shape S x C x N)
-    freq : float
-        Transition frequency (MHz) (shape C)
+        Lower state column density (cm-2)
+    Nu : float
+        Upper state column density (cm-2)
     Aul : float
-        Transition Einstein A coefficient (s-1) (shape C)
+        Einstein A coefficient (s-1)
+    line_profile : float
+        Line profile (MHz-1). Pass 1.0 to get the integrated optical depth.
 
     Returns
     -------
     float
-        Optical depth spectral (shape S x C x N)
+        Total optical depth
     """
     return (
         _C_CM_MHZ**2.0  # cm2 MHz2
         / (8.0 * np.pi * freq**2.0)  # MHz-2
-        * (gu / gl)
-        * Aul  # s-1
-        * (line_profile / 1e6)  # Hz-1
-        * Nl  # cm-2
-        * (1.0 - pt.exp(log_boltz_factor))
+        * (Nl * gu / gl - Nu)  # cm-2
+        * (Aul / 1.0e6)  # MHz
+        * line_profile  # MHz-1
     )
 
 
-def predict_tau(
+def calc_TR(freq: float, inv_boltz_factor: float) -> float:
+    """Evaluate the radiation temperature (AKA Rayleigh-Jeans equivalent temperature,
+    AKA brightness temperature). Note that we do not assume the R-J limit here.
+
+    Parameters
+    ----------
+    freq : float
+        frequency (MHz)
+    inv_boltz_factor : float
+        inverse Boltzmann factor = nL*gU/(nU*gL)
+
+    Returns
+    -------
+    float
+        Radiation temperature (AKA brightness temperature, K)
+    """
+    return _H_K_B_K_MHz * freq / (inv_boltz_factor - 1.0)
+
+
+def predict_tau_spectra(
     mol_data: dict,
     freq_axis: Iterable[float],
-    Nl: Iterable[float],
-    log_boltz_factor: Iterable[float],
+    tau: Iterable[float],
     velocity: Iterable[float],
     fwhm: Iterable[float],
     fwhm_L: float,
@@ -349,10 +366,8 @@ def predict_tau(
         mol_data['freq'] contains C-length array of transition frequencies
     freq_axis : Iterable[float]
         Observed frequency axis (MHz length S)
-    Nl : Iterable[float]
-        Lower state column densities (shape C x N)
-    log_boltz_factor : Iterable[float]
-        log Boltzmann factor (shape C x N)
+    tau : Iterable[float]
+        Total optical depth of each transition (shape C x N)
     velocity : Iterable[float]
         Velocity (km s-1) (length N)
     fwhm : Iterable[float]
@@ -378,47 +393,20 @@ def predict_tau(
     line_profile = calc_pseudo_voigt(freq_axis, frequency, fwhm_freq, fwhm_L_freq)
 
     # Optical depth  (shape: spectral, transitions, clouds)
-    tau = calc_optical_depth(
-        mol_data["Gu"][None, :, None],
-        mol_data["Gl"][None, :, None],
-        Nl[None, :, :],
-        log_boltz_factor[None, :, :],
-        line_profile,
-        mol_data["freq"][None, :, None],
-        mol_data["Aul"][None, :, None],
-    )
-    return tau
-
-
-def rj_temperature(freq: float, temp: float):
-    """Calculate the Rayleigh-Jeans equivalent temperature (AKA the brightness temperature)
-
-    Parameters
-    ----------
-    freq : float
-        Frequency (MHz)
-    temp : float
-        Temperature (K)
-
-    Returns
-    -------
-    float
-        R-J equivalent temperature (K)
-    """
-    const = _H * freq / _K_B
-    return const / (pt.exp(const / temp) - 1.0)
+    return tau[None, :, :] * line_profile
 
 
 def radiative_transfer(
     freq_axis: Iterable[float],
     tau: Iterable[float],
-    Tex: Iterable[float],
+    TB: Iterable[float],
     bg_temp: float,
 ) -> Iterable[float]:
     """Evaluate the radiative transfer to predict the emission spectrum. The emission
     spectrum is ON - OFF, where ON includes the attenuated emission of the background and
     the clouds, and the OFF is the emission of the background. Order of N clouds is
-    assumed to be [nearest, ..., farthest].
+    assumed to be [nearest, ..., farthest]. The emission spectum is the Rayleigh-Jeans
+    equivalent temperature, AKA the brightness temperature.
 
     Parameters
     ----------
@@ -426,28 +414,45 @@ def radiative_transfer(
         Frequency axis (MHz) (length S)
     tau : Iterable[float]
         Optical depth spectra (shape S x C x N)
-    Tex : Iterable[float]
-        Excitation temperatures (K) (shape C x N)
+    TR : Iterable[float]
+        Radiation temperature; shape: C x N)
     bg_temp : float
         Assumed background temperature
 
     Returns
     -------
     Iterable[float]
-        Predicted emission brightness temperature spectrum (K) (length S)
+        Predicted emission Rayleigh-Jeans equivalent temperature
+        (AKA brightness temperature) spectrum (K) (length S)
     """
+    # nothing between us and the first cloud (shape S, 1)
     front_tau = pt.zeros_like(tau[:, 0, 0:1])
-    # sum over transitions and cumsum over clouds
-    sum_tau = pt.concatenate([front_tau, pt.cumsum(tau.sum(axis=1), axis=1)], axis=1)
 
-    # radiative transfer, assuming filling factor = 1.0
-    emission_bg = rj_temperature(freq_axis, bg_temp)
-    emission_bg_attenuated = emission_bg * pt.exp(-sum_tau[:, -1])
-    emission_transitions_clouds = rj_temperature(freq_axis[:, None, None], Tex) * (1.0 - pt.exp(-tau))
-    # sum over transitions
-    emission_clouds = emission_transitions_clouds.sum(axis=1)
-    emission_clouds_attenuated = emission_clouds * pt.exp(-sum_tau[:, :-1])
-    emission = emission_bg_attenuated + emission_clouds_attenuated.sum(axis=1)
+    # sum over transitions (shape S, N)
+    sum_tau_cloud = tau.sum(axis=1)
+
+    # cumulative sum over clouds, append front tau (shape S, N)
+    # This is the total optical depth between us and cloud N
+    # [0, tau(N=0), tau(N=0)+tau(N=1), ..., sum(tau)]
+    sum_tau = pt.concatenate([front_tau, pt.cumsum(sum_tau_cloud, axis=1)], axis=1)
+    total_tau = sum_tau[:, -1]
+
+    # assume background radiation is in thermodynamic equilibrium at bg_temp
+    # This is the R-J equivalent brightness temperature of the background (shape S)
+    TB_bg = _H_K_B_K_MHz * freq_axis / (np.exp(_H_K_B_K_MHz * freq_axis / bg_temp) - 1)
+
+    # Background is attenuated by all foreground clouds (shape S)
+    TB_bg_attenuated = TB_bg * pt.exp(-total_tau)
+
+    # Emission of each cloud, summed over transitions (shape S x N)
+    TB_clouds = pt.sum(TB[None, :, :] * (1.0 - pt.exp(-tau)), axis=1)
+
+    # Attenuation by foreground clouds (shape S x N)
+    # [TB(N=0), TB(N=1)*exp(-tau(N=0)), TB(N=2)*exp(-tau(N=0)-tau(N=1)), ...]
+    TB_clouds_attenuated = TB_clouds * pt.exp(-sum_tau[:, :-1])
+
+    # Emission spectrum (shape S)
+    TB_on = TB_bg_attenuated + TB_clouds_attenuated.sum(axis=1)
 
     # ON - OFF
-    return emission - emission_bg
+    return TB_on - TB_bg
