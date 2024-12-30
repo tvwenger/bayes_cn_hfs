@@ -27,22 +27,6 @@ def test_lorentzian():
     assert not np.any(np.isnan(y))
 
 
-def test_balance():
-    transitions_free, transition_l, transition_u = physics.balance(
-        _MOL_DATA, log10_N0=None, log_boltz_factor=None, verbose=False
-    )
-    assert len(transitions_free) > 0
-    assert len(transition_l) > 0
-    assert len(transition_u) > 0
-
-    log_boltz_factor = np.random.normal(size=len(_MOL_DATA["freq"]))
-    transitions_free, log10_Nl, log10_Nu = physics.balance(
-        _MOL_DATA, log10_N0=12.0, log_boltz_factor=log_boltz_factor, verbose=False
-    )
-    assert not np.any(np.isnan(log10_Nl.eval()))
-    assert not np.any(np.isnan(log10_Nu.eval()))
-
-
 def test_calc_frequency():
     velocity = np.linspace(-10.0, 10.0, 101)
     frequency = physics.calc_frequency(_MOL_DATA["freq"][:, None], velocity)
@@ -62,17 +46,25 @@ def test_calc_thermal_fwhm():
     assert not np.isnan(fwhm)
 
 
-def test_calc_log_boltz_factor():
+def test_calc_stat_weight():
+    g = 6.0
+    E = 5.0
+    Tex = 2.0
+    stat_weight = physics.calc_stat_weight(g, E, Tex).eval()
+    assert not np.isnan(stat_weight)
+
+
+def test_calc_boltz_factor():
     freq = 112000.0
-    Tex = 50.0
-    log_boltz_factor = physics.calc_log_boltz_factor(freq, Tex)
-    assert not np.isnan(log_boltz_factor)
+    Tex = 5.0
+    boltz_factor = physics.calc_boltz_factor(freq, Tex).eval()
+    assert not np.isnan(boltz_factor)
 
 
 def test_calc_Tex():
     freq = 112000.0
-    log_boltz_factor = 5.0
-    Tex = physics.calc_Tex(freq, log_boltz_factor)
+    boltz_factor = 0.5
+    Tex = physics.calc_Tex(freq, boltz_factor).eval()
     assert not np.isnan(Tex)
 
 
@@ -86,42 +78,46 @@ def test_calc_psuedo_voight():
 
 
 def test_calc_optical_depth():
+    freq = 112000.0
     gu = 6.0
     gl = 2.0
+    Nu = 5.0e11
     Nl = 1.0e12
-    log_boltz_factor = 1.5
     line_profile = 1.0
-    freq = 112000.0
     Aul = 1.0e-12
-    optical_depth = physics.calc_optical_depth(gu, gl, Nl, log_boltz_factor, line_profile, freq, Aul).eval()
+    optical_depth = physics.calc_optical_depth(freq, gl, gu, Nl, Nu, Aul, line_profile)
     assert not np.isnan(optical_depth)
 
 
-def test_predict_tau():
+def test_calc_TR():
+    freq = 112000.0
+    boltz_factor = 0.5
+    TR = physics.calc_TR(freq, boltz_factor)
+    assert not np.isnan(TR)
+
+
+def test_predict_tau_spectra():
     freq_axis = np.linspace(113470.0, 113530.0, 500)
-    Nl = np.ones((len(_MOL_DATA["freq"]), 2)) * 1.0e12
-    log_boltz_factor = np.random.normal(size=(len(_MOL_DATA["freq"]), 2))
+    tau = np.random.uniform(0.0, 1.0, size=(len(_MOL_DATA["freq"]), 2))
     velocity = np.array([-5.0, 5.0])
     fwhm = np.array([3.0, 5.0])
     fwhm_L = 1.0
-    tau = physics.predict_tau(_MOL_DATA, freq_axis, Nl, log_boltz_factor, velocity, fwhm, fwhm_L).eval()
-    assert tau.shape == (500, len(_MOL_DATA["freq"]), 2)
-    assert not np.any(np.isnan(tau))
-
-
-def test_rj_temperature():
-    assert physics.rj_temperature(1800.0, -10.0).eval() < physics.rj_temperature(1800.0, 10.0).eval()
+    tau_spectra = physics.predict_tau_spectra(_MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L).eval()
+    assert tau_spectra.shape == (500, len(_MOL_DATA["freq"]), 2)
+    assert not np.any(np.isnan(tau_spectra))
 
 
 def test_radiative_transfer():
     freq_axis = np.linspace(113470.0, 113530.0, 500)
-    Nl = np.ones((len(_MOL_DATA["freq"]), 2)) * 1.0e12
-    log_boltz_factor = np.random.normal(size=(len(_MOL_DATA["freq"]), 2))
-    Tex = physics.calc_Tex(115000.0, log_boltz_factor)
+    tau = np.random.uniform(0.0, 1.0, size=(len(_MOL_DATA["freq"]), 2))
     velocity = np.array([-5.0, 5.0])
     fwhm = np.array([3.0, 5.0])
     fwhm_L = 1.0
-    tau = physics.predict_tau(_MOL_DATA, freq_axis, Nl, log_boltz_factor, velocity, fwhm, fwhm_L).eval()
+    tau_spectra = physics.predict_tau_spectra(_MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L).eval()
+    freq = 113500.0
+    boltz_factor = np.random.uniform(0.0, 1.0, size=(len(_MOL_DATA["freq"]), 2))
+    TR = physics.calc_TR(freq, boltz_factor)
     bg_temp = 2.7
-    tb = physics.radiative_transfer(freq_axis, tau, Tex, bg_temp).eval()
-    assert tb.shape == (500,)
+    brightness = physics.radiative_transfer(freq_axis, tau_spectra, TR, bg_temp).eval()
+    assert brightness.shape == (500,)
+    assert not np.any(np.isnan(brightness))

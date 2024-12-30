@@ -13,6 +13,7 @@ import numpy as np
 from numpy.polynomial import Polynomial
 
 import astropy.units as u
+import astropy.constants as c
 from astroquery.jplspec import JPLSpec
 
 
@@ -169,13 +170,31 @@ def supplement_mol_data(molecule, mol_data: Optional[dict] = None):
         else:
             mol_data = mol_data.copy()
 
+        # Get state information
+        states = mol_data["Ql"] + mol_data["Qu"]
+        degs = np.array([2 * int(Q.split()[-1]) for Q in states])
+        # Energy/k_B (K)
+        Es = np.array([E / c.k_B.to("erg K-1").value for E in list(mol_data["El"]) + list(mol_data["Eu"])])
+
+        # Keep unique
+        unique_states, unique_idx = np.unique(states, return_index=True)
+        unique_states = list(unique_states)
+        unique_degs = degs[unique_idx]
+        unique_Es = Es[unique_idx]
+
+        mol_data["states"] = {
+            "state": unique_states,
+            "deg": unique_degs,
+            "E": unique_Es,
+        }
+
         # Add state degeneracies to mol_data
-        states_u = list(set(mol_data["Qu"]))
-        states_l = list(set(mol_data["Ql"]))
-        mol_data["Gu"] = np.array([2 * int(Qu.split()[-1]) for Qu in mol_data["Qu"]])
-        mol_data["Gl"] = np.array([2 * int(Ql.split()[-1]) for Ql in mol_data["Ql"]])
-        mol_data["state_u"] = [states_u.index(Qu) for Qu in mol_data["Qu"]]
-        mol_data["state_l"] = [states_l.index(Ql) for Ql in mol_data["Ql"]]
+        state_u_idx = [unique_states.index(Qu) for Qu in mol_data["Qu"]]
+        state_l_idx = [unique_states.index(Ql) for Ql in mol_data["Ql"]]
+        mol_data["state_u_idx"] = state_u_idx
+        mol_data["state_l_idx"] = state_l_idx
+        mol_data["Gu"] = unique_degs[state_u_idx]
+        mol_data["Gl"] = unique_degs[state_l_idx]
     elif molecule == "13CN":
         # molecule weight
         mol_weight = 13.0 + 14.0
@@ -189,13 +208,31 @@ def supplement_mol_data(molecule, mol_data: Optional[dict] = None):
         else:
             mol_data = mol_data.copy()
 
+        # Get state information
+        states = mol_data["Ql"] + mol_data["Qu"]
+        degs = np.array([1 + 2 * int(Q.split()[-1]) for Q in states])
+        # Energy/k_B (K)
+        Es = np.array([E / c.k_B.to("erg K-1").value for E in list(mol_data["El"]) + list(mol_data["Eu"])])
+
+        # Keep unique
+        unique_states, unique_idx = np.unique(states, return_index=True)
+        unique_states = list(unique_states)
+        unique_degs = degs[unique_idx]
+        unique_Es = Es[unique_idx]
+
+        mol_data["states"] = {
+            "state": unique_states,
+            "deg": unique_degs,
+            "E": unique_Es,
+        }
+
         # Add state degeneracies to mol_data
-        states_u = list(set(mol_data["Qu"]))
-        states_l = list(set(mol_data["Ql"]))
-        mol_data["Gu"] = np.array([1 + 2 * int(Qu.split()[-1]) for Qu in mol_data["Qu"]])
-        mol_data["Gl"] = np.array([1 + 2 * int(Ql.split()[-1]) for Ql in mol_data["Ql"]])
-        mol_data["state_u"] = [states_u.index(Qu) for Qu in mol_data["Qu"]]
-        mol_data["state_l"] = [states_l.index(Ql) for Ql in mol_data["Ql"]]
+        state_u_idx = [unique_states.index(Qu) for Qu in mol_data["Qu"]]
+        state_l_idx = [unique_states.index(Ql) for Ql in mol_data["Ql"]]
+        mol_data["state_u_idx"] = state_u_idx
+        mol_data["state_l_idx"] = state_l_idx
+        mol_data["Gu"] = unique_degs[state_u_idx]
+        mol_data["Gl"] = unique_degs[state_l_idx]
     else:
         raise ValueError(f"Invalid molecule: {molecule}")
     return mol_data, mol_weight
