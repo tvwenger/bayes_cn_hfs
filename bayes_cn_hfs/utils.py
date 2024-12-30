@@ -13,6 +13,7 @@ import numpy as np
 from numpy.polynomial import Polynomial
 
 import astropy.units as u
+import astropy.constants as c
 from astroquery.jplspec import JPLSpec
 
 
@@ -126,7 +127,112 @@ def get_molecule_data(
         "freq": freqs.to(u.MHz).value,  # rest frequency (MHz)
         "Aul": aij,  # Einstein A (s-1)
         "degu": deg,  # upper state degeneracy
+        "El": EL.to(u.erg).value,  # lower level energy (erg)
         "Eu": EU.to(u.erg).value,  # upper level energy (erg)
         "relative_int": relative_int,  # relative intensity
         "log10_Q_terms": log10_Q_terms,  # partition function linear fit coefficients
+        "Qu": list(output["QN'"]),
+        "Ql": list(output['QN"']),
     }
+
+
+def supplement_mol_data(molecule, mol_data: Optional[dict] = None):
+    """Add states and degeneracy information to mol_data
+
+    Parameters
+    ----------
+    molecule : str
+        Either "CN" or "13CN"
+    mol_data : Optional[dict], optional
+        Molecular data dictionary returned by get_molecule_data(). If None, it will
+        be downloaded. Default is None
+
+    Returns
+    -------
+    dict
+        Molecular data dictionary returned by get_molecule_data and populated with
+        additional fields
+    float
+        Molecular weight (number of nucleii)
+    """
+    # Molecule specific parameters
+    if molecule == "CN":
+        # molecule weight
+        mol_weight = 12.0 + 14.0
+
+        # download molecule data
+        if mol_data is None:
+            mol_data = get_molecule_data(
+                "CN, v = 0, 1",  # molecule name in JPLSpec
+                vibrational_state=0,  # vibrational state number
+                rot_state_lower=0,  # lower rotational state
+            )
+        else:
+            mol_data = mol_data.copy()
+
+        # Get state information
+        states = mol_data["Ql"] + mol_data["Qu"]
+        degs = np.array([2 * int(Q.split()[-1]) for Q in states])
+        # Energy/k_B (K)
+        Es = np.array([E / c.k_B.to("erg K-1").value for E in list(mol_data["El"]) + list(mol_data["Eu"])])
+
+        # Keep unique
+        unique_states, unique_idx = np.unique(states, return_index=True)
+        unique_states = list(unique_states)
+        unique_degs = degs[unique_idx]
+        unique_Es = Es[unique_idx]
+
+        mol_data["states"] = {
+            "state": unique_states,
+            "deg": unique_degs,
+            "E": unique_Es,
+        }
+
+        # Add state degeneracies to mol_data
+        state_u_idx = [unique_states.index(Qu) for Qu in mol_data["Qu"]]
+        state_l_idx = [unique_states.index(Ql) for Ql in mol_data["Ql"]]
+        mol_data["state_u_idx"] = state_u_idx
+        mol_data["state_l_idx"] = state_l_idx
+        mol_data["Gu"] = unique_degs[state_u_idx]
+        mol_data["Gl"] = unique_degs[state_l_idx]
+    elif molecule == "13CN":
+        # molecule weight
+        mol_weight = 13.0 + 14.0
+
+        # download molecule data
+        if mol_data is None:
+            mol_data = get_molecule_data(
+                "C-13-N",  # molecule name in JPLSpec
+                rot_state_lower=0,  # lower rotational state
+            )
+        else:
+            mol_data = mol_data.copy()
+
+        # Get state information
+        states = mol_data["Ql"] + mol_data["Qu"]
+        degs = np.array([1 + 2 * int(Q.split()[-1]) for Q in states])
+        # Energy/k_B (K)
+        Es = np.array([E / c.k_B.to("erg K-1").value for E in list(mol_data["El"]) + list(mol_data["Eu"])])
+
+        # Keep unique
+        unique_states, unique_idx = np.unique(states, return_index=True)
+        unique_states = list(unique_states)
+        unique_degs = degs[unique_idx]
+        unique_Es = Es[unique_idx]
+
+        mol_data["states"] = {
+            "state": unique_states,
+            "deg": unique_degs,
+            "E": unique_Es,
+        }
+
+        # Add state degeneracies to mol_data
+        state_u_idx = [unique_states.index(Qu) for Qu in mol_data["Qu"]]
+        state_l_idx = [unique_states.index(Ql) for Ql in mol_data["Ql"]]
+        mol_data["state_u_idx"] = state_u_idx
+        mol_data["state_l_idx"] = state_l_idx
+        mol_data["Gu"] = unique_degs[state_u_idx]
+        mol_data["Gl"] = unique_degs[state_l_idx]
+    else:
+        raise ValueError(f"Invalid molecule: {molecule}")
+    return mol_data, mol_weight
