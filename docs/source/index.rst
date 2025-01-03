@@ -26,6 +26,7 @@ Installation
    notebooks/cn_ratio_model
    notebooks/cn_ratio_anomalies
    notebooks/g211.59.ipynb
+   notebooks/wb89_380.ipynb
    notebooks/iram_data.ipynb
    notebooks/alma_data.ipynb
 
