@@ -58,8 +58,12 @@ class CNRatioModel(BaseModel):
         self.Feff = Feff
 
         # Get molecular data
-        self.mol_data_12CN, self.mol_weight_12CN = supplement_mol_data("CN", mol_data=mol_data_12CN)
-        self.mol_data_13CN, self.mol_weight_13CN = supplement_mol_data("13CN", mol_data=mol_data_13CN)
+        self.mol_data_12CN, self.mol_weight_12CN = supplement_mol_data(
+            "CN", mol_data=mol_data_12CN
+        )
+        self.mol_data_13CN, self.mol_weight_13CN = supplement_mol_data(
+            "13CN", mol_data=mol_data_13CN
+        )
 
         # Add transitions and states to model
         coords = {
@@ -111,7 +115,7 @@ class CNRatioModel(BaseModel):
         prior_log10_Tkin: Iterable[float] = [1.0, 0.5],
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_fwhm_nonthermal: float = 0.0,
-        prior_fwhm_L: float = 1.0,
+        prior_fwhm_L: Optional[float] = None,
         prior_rms: Optional[dict[str, float]] = None,
         prior_baseline_coeffs: Optional[dict[str, Iterable[float]]] = None,
         assume_LTE: bool = True,
@@ -143,9 +147,10 @@ class CNRatioModel(BaseModel):
             fwhm_nonthermal ~ HalfNormal(sigma=prior_fwhm_nonthermal)
             If 0.0, assume no non-thermal broadening.
         prior_fwhm_L : Optional[float], optional
-            Prior distribution on the latent pseudo-Voight Lorentzian profile line width (km/s),
-            by default 1.0, where
+            Prior distribution on the pseudo-Voight Lorentzian profile line width (km/s),
+            by default None, where
             fwhm_L ~ HalfNormal(sigma=prior_fwhm_L)
+            If None, the line profile is assumed Gaussian.
         prior_rms : Optional[dict[str, float]], optional
             Prior distribution on spectral rms (K), by default None, where
             rms ~ HalfNormal(sigma=prior)
@@ -191,7 +196,9 @@ class CNRatioModel(BaseModel):
         with self.model:
             # Velocity (km/s; shape: clouds)
             if ordered:
-                velocity_offset_norm = pm.Gamma("velocity_norm", alpha=2.0, beta=1.0, dims="cloud")
+                velocity_offset_norm = pm.Gamma(
+                    "velocity_norm", alpha=2.0, beta=1.0, dims="cloud"
+                )
                 velocity_offset = velocity_offset_norm * prior_velocity[1]
                 _ = pm.Deterministic(
                     "velocity",
@@ -214,9 +221,13 @@ class CNRatioModel(BaseModel):
             # kinetic temperature (K; shape: clouds)
             if fix_log10_Tkin:
                 # log10_Tkin is fixed
-                log10_Tkin = pm.Data("log10_Tkin", np.ones(self.n_clouds) * fix_log10_Tkin, dims="cloud")
+                log10_Tkin = pm.Data(
+                    "log10_Tkin", np.ones(self.n_clouds) * fix_log10_Tkin, dims="cloud"
+                )
             else:
-                log10_Tkin_norm = pm.Normal("log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud")
+                log10_Tkin_norm = pm.Normal(
+                    "log10_Tkin_norm", mu=0.0, sigma=1.0, dims="cloud"
+                )
                 log10_Tkin = pm.Deterministic(
                     "log10_Tkin",
                     prior_log10_Tkin[0] + prior_log10_Tkin[1] * log10_Tkin_norm,
@@ -225,27 +236,44 @@ class CNRatioModel(BaseModel):
 
             # Thermal FWHM (km/s; shape: clouds)
             fwhm_thermal_12CN = pm.Deterministic(
-                "fwhm_thermal_12CN", physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_12CN), dims="cloud"
+                "fwhm_thermal_12CN",
+                physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_12CN),
+                dims="cloud",
             )
             fwhm_thermal_13CN = pm.Deterministic(
-                "fwhm_thermal_13CN", physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_13CN), dims="cloud"
+                "fwhm_thermal_13CN",
+                physics.calc_thermal_fwhm(10.0**log10_Tkin, self.mol_weight_13CN),
+                dims="cloud",
             )
 
             # Non-thermal FWHM (km/s; shape: clouds)
             fwhm_nonthermal = 0.0
             if prior_fwhm_nonthermal > 0:
-                fwhm_nonthermal_norm = pm.HalfNormal("fwhm_nonthermal_norm", sigma=1.0, dims="cloud")
+                fwhm_nonthermal_norm = pm.HalfNormal(
+                    "fwhm_nonthermal_norm", sigma=1.0, dims="cloud"
+                )
                 fwhm_nonthermal = pm.Deterministic(
-                    "fwhm_nonthermal", prior_fwhm_nonthermal * fwhm_nonthermal_norm, dims="cloud"
+                    "fwhm_nonthermal",
+                    prior_fwhm_nonthermal * fwhm_nonthermal_norm,
+                    dims="cloud",
                 )
 
             # Total (physical) FWHM (km/s; shape: clouds)
-            _ = pm.Deterministic("fwhm_12CN", pt.sqrt(fwhm_thermal_12CN**2.0 + fwhm_nonthermal**2.0), dims="cloud")
-            _ = pm.Deterministic("fwhm_13CN", pt.sqrt(fwhm_thermal_13CN**2.0 + fwhm_nonthermal**2.0), dims="cloud")
+            _ = pm.Deterministic(
+                "fwhm_12CN",
+                pt.sqrt(fwhm_thermal_12CN**2.0 + fwhm_nonthermal**2.0),
+                dims="cloud",
+            )
+            _ = pm.Deterministic(
+                "fwhm_13CN",
+                pt.sqrt(fwhm_thermal_13CN**2.0 + fwhm_nonthermal**2.0),
+                dims="cloud",
+            )
 
             # Pseudo-Voigt profile latent variable (km/s)
-            fwhm_L_norm = pm.HalfNormal("fwhm_L_norm", sigma=1.0)
-            _ = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
+            if prior_fwhm_L is not None:
+                fwhm_L_norm = pm.HalfNormal("fwhm_L_norm", sigma=1.0)
+                _ = pm.Deterministic("fwhm_L", prior_fwhm_L * fwhm_L_norm)
 
             # Spectral rms (K)
             if prior_rms is not None:
@@ -254,15 +282,22 @@ class CNRatioModel(BaseModel):
                     _ = pm.Deterministic(f"rms_{label}", rms_norm * prior_rms[label])
 
             # CN total column density (cm-2; shape: clouds)
-            log10_N_12CN_norm = pm.Normal("log10_N_12CN_norm", mu=0.0, sigma=1.0, dims="cloud")
+            log10_N_12CN_norm = pm.Normal(
+                "log10_N_12CN_norm", mu=0.0, sigma=1.0, dims="cloud"
+            )
             log10_N_12CN = pm.Deterministic(
-                "log10_N_12CN", prior_log10_N_12CN[0] + prior_log10_N_12CN[1] * log10_N_12CN_norm, dims="cloud"
+                "log10_N_12CN",
+                prior_log10_N_12CN[0] + prior_log10_N_12CN[1] * log10_N_12CN_norm,
+                dims="cloud",
             )
             N_12CN = 10.0**log10_N_12CN
 
             # 12C/13C ratio (shape: clouds)
             ratio_12C_13C = pm.Gamma(
-                "ratio_12C_13C", mu=prior_ratio_12C_13C[0], sigma=prior_ratio_12C_13C[1], dims="cloud"
+                "ratio_12C_13C",
+                mu=prior_ratio_12C_13C[0],
+                sigma=prior_ratio_12C_13C[1],
+                dims="cloud",
             )
 
             # 13C total column density (cm-2; shape: clouds)
@@ -270,12 +305,18 @@ class CNRatioModel(BaseModel):
 
             if assume_LTE:
                 # Upper-lower excitation temperature is fixed at kinetic temperature (K; shape: clouds)
-                log10_Tex_ul = pm.Deterministic("log10_Tex_ul", log10_Tkin, dims="cloud")
+                log10_Tex_ul = pm.Deterministic(
+                    "log10_Tex_ul", log10_Tkin, dims="cloud"
+                )
             else:
                 # Upper->lower excitation temperature (K; shape: clouds)
-                log10_Tex_ul_norm = pm.Normal("log10_Tex_ul_norm", mu=0.0, sigma=1.0, dims="cloud")
+                log10_Tex_ul_norm = pm.Normal(
+                    "log10_Tex_ul_norm", mu=0.0, sigma=1.0, dims="cloud"
+                )
                 log10_Tex_ul = pm.Deterministic(
-                    "log10_Tex_ul", prior_log10_Tex[0] + prior_log10_Tex[1] * log10_Tex_ul_norm, dims="cloud"
+                    "log10_Tex_ul",
+                    prior_log10_Tex[0] + prior_log10_Tex[1] * log10_Tex_ul_norm,
+                    dims="cloud",
                 )
             Tex_ul = 10.0**log10_Tex_ul
 
@@ -285,10 +326,14 @@ class CNRatioModel(BaseModel):
             N_tots = [N_12CN, N_13CN]
             LTE_precision = None
 
-            for molecule, mol_data, assume_CTEX, N_tot in zip(molecules, mol_datas, assume_CTEXs, N_tots):
+            for molecule, mol_data, assume_CTEX, N_tot in zip(
+                molecules, mol_datas, assume_CTEXs, N_tots
+            ):
                 # LTE statistical weights (shape: clouds, states)
                 LTE_weights = physics.calc_stat_weight(
-                    mol_data["states"]["deg"][None, :], mol_data["states"]["E"][None, :], Tex_ul[:, None]
+                    mol_data["states"]["deg"][None, :],
+                    mol_data["states"]["E"][None, :],
+                    Tex_ul[:, None],
                 )
                 LTE_weights = LTE_weights / pt.sum(LTE_weights, axis=1)[:, None]
 
@@ -301,7 +346,9 @@ class CNRatioModel(BaseModel):
                     )
 
                     # Boltzmann factor (shape: transition, cloud)
-                    boltz_factor = physics.calc_boltz_factor(mol_data["freq"][:, None], Tex)
+                    boltz_factor = physics.calc_boltz_factor(
+                        mol_data["freq"][:, None], Tex
+                    )
 
                     # State column densities (cm-2; shape: clouds, states)
                     N_state = N_tot[:, None] * LTE_weights
@@ -312,7 +359,12 @@ class CNRatioModel(BaseModel):
                 else:
                     if molecule == "12CN":
                         # LTE precision (inverse Dirichlet concentration) (shape: clouds)
-                        LTE_precision = pm.Gamma("LTE_precision", alpha=1.0, beta=prior_LTE_precision, dims="cloud")
+                        LTE_precision = pm.Gamma(
+                            "LTE_precision",
+                            alpha=1.0,
+                            beta=prior_LTE_precision,
+                            dims="cloud",
+                        )
 
                     # Dirichlet state fraction (shape: cloud, state)
                     weights = pm.Dirichlet(
@@ -329,7 +381,9 @@ class CNRatioModel(BaseModel):
                     Nl = pt.stack([N_state[:, idx] for idx in mol_data["state_l_idx"]])
 
                     # Boltzmann factor (shape: transition, cloud)
-                    boltz_factor = Nu * mol_data["Gl"][:, None] / (Nl * mol_data["Gu"][:, None])
+                    boltz_factor = (
+                        Nu * mol_data["Gl"][:, None] / (Nl * mol_data["Gu"][:, None])
+                    )
 
                     # Excitation temperature (shape: transition, cloud)
                     Tex = pm.Deterministic(
@@ -354,7 +408,9 @@ class CNRatioModel(BaseModel):
                 )
 
                 # Total optical depth (shape: clouds)
-                _ = pm.Deterministic(f"tau_total_{molecule}", pt.sum(tau, axis=0), dims="cloud")
+                _ = pm.Deterministic(
+                    f"tau_total_{molecule}", pt.sum(tau, axis=0), dims="cloud"
+                )
 
                 # Radiation temperature (K; shape: transitions, clouds)
                 TR = pm.Deterministic(
@@ -386,7 +442,7 @@ class CNRatioModel(BaseModel):
                 self.model[f"tau_{molecule}"],
                 self.model["velocity"],
                 self.model[f"fwhm_{molecule}"],
-                self.model["fwhm_L"],
+                self.model["fwhm_L"] if "fwhm_L" in self.model else 0.0,
             )
 
             # Radiative transfer (shape: spectral)
