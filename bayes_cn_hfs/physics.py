@@ -208,13 +208,19 @@ def calc_pseudo_voigt(
     channel_fwhm = 4.0 * np.log(2.0) * channel_size / np.pi
     fwhm_conv = pt.sqrt(fwhm**2.0 + channel_fwhm**2.0 + fwhm_L[:, None] ** 2.0)
     fwhm_L_frac = fwhm_L[:, None] / fwhm_conv
-    eta = 1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
+    eta = (
+        1.36603 * fwhm_L_frac - 0.47719 * fwhm_L_frac**2.0 + 0.11116 * fwhm_L_frac**3.0
+    )
 
     # gaussian component
-    gauss_part = gaussian(freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :])
+    gauss_part = gaussian(
+        freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :]
+    )
 
     # lorentzian component
-    lorentz_part = lorentzian(freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :])
+    lorentz_part = lorentzian(
+        freq_axis[:, None, None], frequency[None, :, :], fwhm_conv[None, :, :]
+    )
 
     # linear combination
     return eta * lorentz_part + (1.0 - eta) * gauss_part
