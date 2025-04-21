@@ -98,7 +98,7 @@ class CNRatioModel(BaseModel):
                 "log10_Tex_ul": r"$\log_{10} T_{\rm ex}$ (K)",
                 "Tex_12CN": r"$T_{\rm ex, CN}$ (K)",
                 "Tex_13CN": r"$T_{{\rm ex}, ^{13}\rm CN}$ (K)",
-                "LTE_precision": r"$1/a_{\rm LTE}$",
+                "log10_LTE_precision": r"$\log_{10} 1/a_{\rm LTE}$",
                 "tau_12CN": r"$\tau_{\rm CN}$",
                 "tau_13CN": r"$\tau_{^{13}\rm CN}$",
                 "tau_total_12CN": r"$\tau_{\rm tot, CN}$",
@@ -111,7 +111,7 @@ class CNRatioModel(BaseModel):
     def add_priors(
         self,
         prior_log10_N_12CN: Iterable[float] = [13.5, 1.0],
-        prior_ratio_12C_13C: Iterable[float] = [75.0, 25.0],
+        prior_ratio_13C_12C: float = 0.1,
         prior_log10_Tkin: Iterable[float] = [1.0, 0.5],
         prior_velocity: Iterable[float] = [0.0, 10.0],
         prior_fwhm_nonthermal: float = 0.0,
@@ -121,9 +121,11 @@ class CNRatioModel(BaseModel):
         assume_LTE: bool = True,
         prior_log10_Tex: Iterable[float] = [1.0, 0.5],
         assume_CTEX_12CN: bool = True,
-        prior_LTE_precision: float = 100.0,
+        prior_log10_LTE_precision: float = [-6.0, 1.0],
         assume_CTEX_13CN: bool = True,
         fix_log10_Tkin: Optional[float] = None,
+        clip_weights: Optional[float] = 1.0e-3,
+        clip_tau: Optional[float] = -10.0,
         ordered: bool = False,
     ):
         """Add priors and deterministics to the model
@@ -133,9 +135,9 @@ class CNRatioModel(BaseModel):
         prior_log10_N_12CN : Iterable[float], optional
             Prior distribution on total CN column density over all lower and upper states, by default [13.5, 1.0], where
             log10_N_12CN ~ Normal(mu=prior[0], sigma=prior[1])
-        prior_ratio_12C_13C : Iterable[float], optional
-            Prior distribution on 12C/13C ratio, by default [75.0, 25.0], where
-            ratio_12C_13C ~ Gamma(mu=prior[0], sigma=prior[1])
+        prior_ratio_13C_12C : float, optional
+            Prior distribution on 13C/12C ratio, by default 0.1, where
+            ratio_13C_12C ~ HalfNormal(sigma=prior)
         prior_log10_Tkin : Iterable[float], optional
             Prior distribution on log10 cloud kinetic temperature (K), by default [1.0, 0.5], where
             log10_Tkin ~ Normal(mu=prior[0], sigma=prior[1])
@@ -173,14 +175,18 @@ class CNRatioModel(BaseModel):
             assume_CTEX_13CN = False).
         assume_CTEX_12CN : bool, optional
             Assume that every 12CN transition has the same excitation temperature, by default True.
-        prior_LTE_precision : float, optional
-            Prior distribution on the state column density departures from LTE, by default 100.0, where
-            LTE_precision ~ Gamma(alpha=1.0, beta=prior)
+        prior_log10_LTE_precision : Iterable[float], optional
+            Prior distribution on the state column density departures from LTE, by default [-6.0, 1.0], where
+            log10_LTE_precision ~ prior[0] + HalfNormal(sigma=prior[1])
             stat_weights ~ Dirichlet(a=LTE_stat_weights/LTE_precision)
         assume_CTEX_13CN : bool, optional
             Assume that every 13CN transition has the same excitation temperature, by default True.
         fix_log10_Tkin : Optional[float], optional
             Fix the log10 cloud kinetic temperature at this value (K), by default None.
+        clip_weights : Optional[float], optional
+            Clip weights between [clip, 1.0-clip], by default 1.0e-3
+        clip_tau : Optional[float], optional
+            Clip masers by truncating optical depths below this value, by default -10.0
         ordered : bool, optional
             If True, assume ordered velocities (optically thin assumption), by default False.
             If True, the prior distribution on the velocity becomes
@@ -292,16 +298,16 @@ class CNRatioModel(BaseModel):
             )
             N_12CN = 10.0**log10_N_12CN
 
-            # 12C/13C ratio (shape: clouds)
-            ratio_12C_13C = pm.Gamma(
-                "ratio_12C_13C",
-                mu=prior_ratio_12C_13C[0],
-                sigma=prior_ratio_12C_13C[1],
-                dims="cloud",
+            # 13C/12C ratio (shape: clouds)
+            ratio_13C_12C_norm = pm.HalfNormal(
+                "ratio_13C_12C_norm", sigma=1.0, dims="cloud"
+            )
+            ratio_13C_12C = pm.Deterministic(
+                "ratio_13C_12C", prior_ratio_13C_12C * ratio_13C_12C_norm, dims="cloud"
             )
 
             # 13C total column density (cm-2; shape: clouds)
-            N_13CN = pm.Deterministic("N_13CN", N_12CN / ratio_12C_13C, dims="cloud")
+            N_13CN = pm.Deterministic("N_13CN", N_12CN * ratio_13C_12C, dims="cloud")
 
             if assume_LTE:
                 # Upper-lower excitation temperature is fixed at kinetic temperature (K; shape: clouds)
@@ -358,20 +364,39 @@ class CNRatioModel(BaseModel):
                     Nl = pt.stack([N_state[:, idx] for idx in mol_data["state_l_idx"]])
                 else:
                     if molecule == "12CN":
-                        # LTE precision (inverse Dirichlet concentration) (shape: clouds)
-                        LTE_precision = pm.Gamma(
-                            "LTE_precision",
-                            alpha=1.0,
-                            beta=prior_LTE_precision,
+                        # LTE precision (inverse concentration) (shape: clouds)
+                        log10_LTE_precision_norm = pm.HalfNormal(
+                            "log10_LTE_precision_norm",
+                            sigma=1.0,
                             dims="cloud",
                         )
+                        log10_LTE_precision = pm.Deterministic(
+                            "log10_LTE_precision",
+                            prior_log10_LTE_precision[0]
+                            + log10_LTE_precision_norm * prior_log10_LTE_precision[1],
+                            dims="cloud",
+                        )
+                        LTE_precision = 10.0**log10_LTE_precision
+
+                    # Restrict concentration to uniform
+                    LTE_concentration = LTE_weights / LTE_precision[:, None]
+                    LTE_concentration = pm.Deterministic(
+                        f"LTE_concentration_{molecule}",
+                        pt.switch(
+                            pt.lt(LTE_concentration, 1.0), 1.0, LTE_concentration
+                        ),
+                        dims=["cloud", f"state_{molecule}"],
+                    )
 
                     # Dirichlet state fraction (shape: cloud, state)
                     weights = pm.Dirichlet(
                         f"weights_{molecule}",
-                        a=LTE_weights / LTE_precision[:, None],
+                        a=LTE_concentration,
                         dims=["cloud", f"state_{molecule}"],
                     )
+                    # Prevent weights=0
+                    weights = pt.clip(weights, clip_weights, 1.0 - clip_weights)
+                    weights = weights / pt.sum(weights, axis=1)[:, None]
 
                     # State column densities (cm-2; shape: clouds, states)
                     N_state = N_tot[:, None] * weights
@@ -395,14 +420,18 @@ class CNRatioModel(BaseModel):
                 # Optical depth (shape: transitions, clouds)
                 tau = pm.Deterministic(
                     f"tau_{molecule}",
-                    physics.calc_optical_depth(
-                        mol_data["freq"][:, None],
-                        mol_data["Gl"][:, None],
-                        mol_data["Gu"][:, None],
-                        Nl,
-                        Nu,
-                        mol_data["Aul"][:, None],
-                        1.0,  # integrated line profile
+                    pt.clip(
+                        physics.calc_optical_depth(
+                            mol_data["freq"][:, None],
+                            mol_data["Gl"][:, None],
+                            mol_data["Gu"][:, None],
+                            Nl,
+                            Nu,
+                            mol_data["Aul"][:, None],
+                            1.0,  # integrated line profile
+                        ),
+                        clip_tau,
+                        pt.inf,
                     ),
                     dims=[f"transition_{molecule}", "cloud"],
                 )
@@ -413,7 +442,8 @@ class CNRatioModel(BaseModel):
                 )
 
                 # Radiation temperature (K; shape: transitions, clouds)
-                TR = pm.Deterministic(
+                # catch masers
+                _ = pm.Deterministic(
                     f"TR_{molecule}",
                     physics.calc_TR(mol_data["freq"][:, None], boltz_factor),
                     dims=[f"transition_{molecule}", "cloud"],

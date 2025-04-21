@@ -285,7 +285,10 @@ def calc_TR(freq: float, boltz_factor: float) -> float:
     float
         Radiation temperature (AKA brightness temperature, K)
     """
-    return _H_K_B_K_MHz * freq / (1.0 / boltz_factor - 1.0)
+    denom_factor = pt.switch(
+        pt.eq(boltz_factor, 1.0), 0.0, 1.0 / (1.0 / boltz_factor - 1.0)
+    )
+    return _H_K_B_K_MHz * freq * denom_factor
 
 
 def predict_tau_spectra(
@@ -380,7 +383,7 @@ def radiative_transfer(
     # This is the R-J equivalent brightness temperature of the background (shape S)
     TR_bg = _H_K_B_K_MHz * freq_axis / (np.exp(_H_K_B_K_MHz * freq_axis / bg_temp) - 1)
 
-    # Background is attenuated by all foreground clouds (shape S)
+    # Background is attenuated (or amplified) by all foreground clouds (shape S)
     TR_bg_attenuated = TR_bg * pt.exp(-total_tau)
 
     # Emission of each cloud, summed over transitions (shape S x N)

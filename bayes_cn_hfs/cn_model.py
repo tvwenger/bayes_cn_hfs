@@ -71,7 +71,6 @@ class CNModel(BaseModel):
 
         # Select features used for posterior clustering
         self._cluster_features += [
-            "log10_N",
             "fwhm",
             "velocity",
         ]
@@ -88,7 +87,7 @@ class CNModel(BaseModel):
                 "log10_N": r"$\log_{10} N_{\rm tot}$ (cm$^{-2}$)",
                 "log10_Tex_ul": r"$\log_{10} T_{{\rm ex}, ul}$ (K)",
                 "Tex": r"$T_{\rm ex}$ (K)",
-                "LTE_precision": r"$1/a_{\rm LTE}$",
+                "log10_LTE_precision": r"$\log_{10} 1/a_{\rm LTE}$",
                 "tau": r"$\tau$",
                 "tau_total": r"$\tau_{\rm tot}$",
                 "TR": r"$T_R$ (K)",
@@ -107,8 +106,10 @@ class CNModel(BaseModel):
         assume_LTE: bool = True,
         prior_log10_Tex: Iterable[float] = [1.0, 0.5],
         assume_CTEX: bool = True,
-        prior_LTE_precision: float = 100.0,
+        prior_log10_LTE_precision: float = [-6.0, 1.0],
         fix_log10_Tkin: Optional[float] = None,
+        clip_weights: Optional[float] = 1.0e-3,
+        clip_tau: Optional[float] = -10.0,
         ordered: bool = False,
     ):
         """Add priors and deterministics to the model
@@ -154,12 +155,16 @@ class CNModel(BaseModel):
             over all states (if assume_CTEX = False).
         assume_CTEX : bool, optional
             Assume that every transition has the same excitation temperature, by default True.
-        prior_LTE_precision : float, optional
-            Prior distribution on the state column density departures from LTE, by default 100.0, where
-            LTE_precision ~ Gamma(alpha=1.0, beta=prior)
+        prior_log10_LTE_precision : Iterable[float], optional
+            Prior distribution on the state column density departures from LTE, by default [-6.0, 1.0], where
+            log10_LTE_precision ~ prior[0] + HalfNormal(sigma=prior[1])
             stat_weights ~ Dirichlet(a=LTE_stat_weights/LTE_precision)
         fix_log10_Tkin : Optional[float], optional
             Fix the log10 cloud kinetic temperature at this value (K), by default None.
+        clip_weights : Optional[float], optional
+            Clip weights between [clip, 1.0-clip], by default 1.0e-3
+        clip_tau : Optional[float], optional
+            Clip masers by truncating optical depths below this value, by default -10.0
         ordered : bool, optional
             If True, assume ordered velocities (optically thin assumption), by default False.
             If True, the prior distribution on the velocity becomes
@@ -280,7 +285,11 @@ class CNModel(BaseModel):
                 self.mol_data["states"]["E"][None, :],
                 Tex_ul[:, None],
             )
-            LTE_weights = LTE_weights / pt.sum(LTE_weights, axis=1)[:, None]
+            LTE_weights = pm.Deterministic(
+                "LTE_weights",
+                LTE_weights / pt.sum(LTE_weights, axis=1)[:, None],
+                dims=["cloud", "state"],
+            )
 
             if assume_CTEX:
                 # constant across transitions (K; shape: transitions, clouds)
@@ -302,17 +311,37 @@ class CNModel(BaseModel):
                 Nu = pt.stack([N_state[:, idx] for idx in self.mol_data["state_u_idx"]])
                 Nl = pt.stack([N_state[:, idx] for idx in self.mol_data["state_l_idx"]])
             else:
-                # LTE precision (inverse Dirichlet concentration) (shape: clouds)
-                LTE_precision = pm.Gamma(
-                    "LTE_precision", alpha=1.0, beta=prior_LTE_precision, dims="cloud"
+                # LTE precision (inverse concentration) (shape: clouds)
+                log10_LTE_precision_norm = pm.HalfNormal(
+                    "log10_LTE_precision_norm",
+                    sigma=1.0,
+                    dims="cloud",
+                )
+                log10_LTE_precision = pm.Deterministic(
+                    "log10_LTE_precision",
+                    prior_log10_LTE_precision[0]
+                    + log10_LTE_precision_norm * prior_log10_LTE_precision[1],
+                    dims="cloud",
+                )
+                LTE_precision = 10.0**log10_LTE_precision
+
+                # Restrict concentration to uniform
+                LTE_concentration = LTE_weights / LTE_precision[:, None]
+                LTE_concentration = pm.Deterministic(
+                    "LTE_concentration",
+                    pt.switch(pt.lt(LTE_concentration, 1.0), 1.0, LTE_concentration),
+                    dims=["cloud", "state"],
                 )
 
                 # Dirichlet state fraction (shape: cloud, state)
                 weights = pm.Dirichlet(
                     "weights",
-                    a=LTE_weights / LTE_precision[:, None],
+                    a=LTE_concentration,
                     dims=["cloud", "state"],
                 )
+                # Prevent weights=0
+                weights = pt.clip(weights, clip_weights, 1.0 - clip_weights)
+                weights = weights / pt.sum(weights, axis=1)[:, None]
 
                 # State column densities (cm-2; shape: clouds, states)
                 N_state = N_tot[:, None] * weights
@@ -338,14 +367,18 @@ class CNModel(BaseModel):
             # Optical depth (shape: transitions, clouds)
             tau = pm.Deterministic(
                 "tau",
-                physics.calc_optical_depth(
-                    self.mol_data["freq"][:, None],
-                    self.mol_data["Gl"][:, None],
-                    self.mol_data["Gu"][:, None],
-                    Nl,
-                    Nu,
-                    self.mol_data["Aul"][:, None],
-                    1.0,  # integrated line profile
+                pt.clip(
+                    physics.calc_optical_depth(
+                        self.mol_data["freq"][:, None],
+                        self.mol_data["Gl"][:, None],
+                        self.mol_data["Gu"][:, None],
+                        Nl,
+                        Nu,
+                        self.mol_data["Aul"][:, None],
+                        1.0,  # integrated line profile
+                    ),
+                    clip_tau,
+                    pt.inf,
                 ),
                 dims=["transition", "cloud"],
             )
@@ -354,7 +387,7 @@ class CNModel(BaseModel):
             _ = pm.Deterministic("tau_total", pt.sum(tau, axis=0), dims="cloud")
 
             # Radiation temperature (K; shape: transitions, clouds)
-            TR = pm.Deterministic(
+            _ = pm.Deterministic(
                 "TR",
                 physics.calc_TR(self.mol_data["freq"][:, None], boltz_factor),
                 dims=["transition", "cloud"],
@@ -398,7 +431,7 @@ class CNModel(BaseModel):
                     sigma = self.model[f"rms_{label}"]
 
                 # Evaluate likelihood
-                obs = pm.Normal(
+                _ = pm.Normal(
                     label,
                     mu=predicted,
                     sigma=sigma,
