@@ -108,7 +108,7 @@ class CNModel(BaseModel):
         assume_CTEX: bool = True,
         prior_log10_LTE_precision: float = [-6.0, 1.0],
         fix_log10_Tkin: Optional[float] = None,
-        clip_weights: Optional[float] = 1.0e-3,
+        clip_weights: Optional[float] = 1.0e-9,
         clip_tau: Optional[float] = -10.0,
         ordered: bool = False,
     ):
@@ -162,7 +162,7 @@ class CNModel(BaseModel):
         fix_log10_Tkin : Optional[float], optional
             Fix the log10 cloud kinetic temperature at this value (K), by default None.
         clip_weights : Optional[float], optional
-            Clip weights between [clip, 1.0-clip], by default 1.0e-3
+            Clip weights between [clip, 1.0-clip], by default 1.0e-9
         clip_tau : Optional[float], optional
             Clip masers by truncating optical depths below this value, by default -10.0
         ordered : bool, optional
@@ -324,14 +324,7 @@ class CNModel(BaseModel):
                     dims="cloud",
                 )
                 LTE_precision = 10.0**log10_LTE_precision
-
-                # Restrict concentration to uniform
                 LTE_concentration = LTE_weights / LTE_precision[:, None]
-                LTE_concentration = pm.Deterministic(
-                    "LTE_concentration",
-                    pt.switch(pt.lt(LTE_concentration, 1.0), 1.0, LTE_concentration),
-                    dims=["cloud", "state"],
-                )
 
                 # Dirichlet state fraction (shape: cloud, state)
                 weights = pm.Dirichlet(

@@ -76,7 +76,6 @@ class CNRatioModel(BaseModel):
 
         # Select features used for posterior clustering
         self._cluster_features += [
-            "log10_N_12CN",
             "fwhm_12CN",
             "velocity",
         ]
@@ -93,7 +92,7 @@ class CNRatioModel(BaseModel):
                 "fwhm_13CN": r"$\Delta V_{^{13}\rm CN}$ (km s$^{-1}$)",
                 "fwhm_L": r"$\Delta V_L$ (km s$^{-1}$)",
                 "log10_N_12CN": r"$\log_{10} N_{\rm tot, CN}$ (cm$^{-2}$)",
-                "ratio_12C_13C": r"$^{12}{\rm C}/^{13}{\rm C}$",
+                "ratio_13C_12C": r"$^{13}{\rm C}/^{12}{\rm C}$",
                 "N_13CN": r"$N_{{\rm tot} ^{13}\rm CN}$ (cm$^{-2}$)",
                 "log10_Tex_ul": r"$\log_{10} T_{\rm ex}$ (K)",
                 "Tex_12CN": r"$T_{\rm ex, CN}$ (K)",
@@ -124,7 +123,7 @@ class CNRatioModel(BaseModel):
         prior_log10_LTE_precision: float = [-6.0, 1.0],
         assume_CTEX_13CN: bool = True,
         fix_log10_Tkin: Optional[float] = None,
-        clip_weights: Optional[float] = 1.0e-3,
+        clip_weights: Optional[float] = 1.0e-9,
         clip_tau: Optional[float] = -10.0,
         ordered: bool = False,
     ):
@@ -184,7 +183,7 @@ class CNRatioModel(BaseModel):
         fix_log10_Tkin : Optional[float], optional
             Fix the log10 cloud kinetic temperature at this value (K), by default None.
         clip_weights : Optional[float], optional
-            Clip weights between [clip, 1.0-clip], by default 1.0e-3
+            Clip weights between [clip, 1.0-clip], by default 1.0e-9
         clip_tau : Optional[float], optional
             Clip masers by truncating optical depths below this value, by default -10.0
         ordered : bool, optional
@@ -377,16 +376,13 @@ class CNRatioModel(BaseModel):
                             dims="cloud",
                         )
                         LTE_precision = 10.0**log10_LTE_precision
-
-                    # Restrict concentration to uniform
                     LTE_concentration = LTE_weights / LTE_precision[:, None]
-                    LTE_concentration = pm.Deterministic(
-                        f"LTE_concentration_{molecule}",
-                        pt.switch(
-                            pt.lt(LTE_concentration, 1.0), 1.0, LTE_concentration
-                        ),
-                        dims=["cloud", f"state_{molecule}"],
-                    )
+
+                    if molecule == "13CN":
+                        # Concentration is normalized by number of transitions
+                        LTE_concentration *= len(self.model.coords["state_13CN"]) / len(
+                            self.model.coords["state_12CN"]
+                        )
 
                     # Dirichlet state fraction (shape: cloud, state)
                     weights = pm.Dirichlet(

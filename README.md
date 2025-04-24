@@ -74,6 +74,7 @@ The models provided by `bayes_cn_hfs` are implemented in the [`bayes_spec`](http
 3. By default, the spectral RMS noise is not inferred, rather it is taken from the `noise` attribute of the passed `SpecData` datasets. If `prior_rms` is not None, then the spectral RMS noise of each dataset is inferred.
 4. Hyperfine anomalies are treated as deviations from the LTE densities of each state. The value passed to `prior_log10_Tex` sets the average excitation temperature, `log10_Tex_ul`, and statistical weights of every transition, `LTE_weights` (i.e., the fraction of molecules in each state). Deviations from these weights are modeled as a Dirichlet distribution with a concentration parameter `LTE_weights/LTE_precision`, where `LTE_precision` is a cloud parameter that describes the scatter in state weights around the LTE values. A small `LTE_precision` implies a large concentration around `LTE_weights` such that the cloud is in LTE. A large `LTE_precision` value indicates deviations from LTE.
 5. For the `CNRatioModel`, the $^{13}$CN excitation conditions are either (1) assumed constant across transitions with value `log10_Tex_ul` when `assume_CTEX_13CN=True` or (2) assumed to be similar to the excitation conditions of CN, with LTE deviations characterized by the same `LTE_precision` parameter.
+6. To prevent masers, which have a different equation of radiative transfer than is assumed by the model, we clip the statistical weights to be in the range `[clip_weights, 1.0 - clip_weights]` (i.e., the weights can't be 0 or 1), and we clip the optical depth below `clip_tau`.
 
 ## `CNModel`
 
@@ -81,14 +82,14 @@ The basic model is `CNModel`, a general purpose model for modelling hyperfine sp
 
 ![cn model graph](docs/source/notebooks/cn_model.png)
 
-| Cloud Parameter<br>`variable` | Parameter                                              | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`           | Default<br>`prior_{variable}` |
-| :---------------------------- | :----------------------------------------------------- | :------- | :----------------------------------------------------------------- | :---------------------------- |
-| `log10_N`                     | Total column density across all upper and lower states | `cm-2`   | $\log_{10}N \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                | `[13.5, 1.0]`                 |
-| `log10_Tkin`                  | Kinetic temperature                                    | `K`      | $\log_{10}T_K \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$              | `[1.0, 0.5]`                  |
-| `velocity`                    | Velocity (same reference frame as data)                | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                         | `[0.0, 10.0]`                 |
-| `fwhm_nonthermal`             | Non-thermal FWHM line width                            | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$                | `0.0`                         |  |
-| `log10_Tex`                   | Average excitation temperature                         | `K`      | $\log_{10}T_{{\rm ex}, ul} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$ | `[1.0, 0.5]`                  |
-| `LTE_precision`               | LTE precision                                          | ``       | $1/a_{\rm LTE} \sim {\rm Gamma}(\alpha=1, \beta=p)$                | `100.0`                       |  |
+| Cloud Parameter<br>`variable` | Parameter                                              | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`            | Default<br>`prior_{variable}` |
+| :---------------------------- | :----------------------------------------------------- | :------- | :------------------------------------------------------------------ | :---------------------------- |
+| `log10_N`                     | Total column density across all upper and lower states | `cm-2`   | $\log_{10}N \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                 | `[13.5, 1.0]`                 |
+| `log10_Tkin`                  | Kinetic temperature                                    | `K`      | $\log_{10}T_K \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$               | `[1.0, 0.5]`                  |
+| `velocity`                    | Velocity (same reference frame as data)                | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                          | `[0.0, 10.0]`                 |
+| `fwhm_nonthermal`             | Non-thermal FWHM line width                            | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$                 | `0.0`                         |  |
+| `log10_Tex`                   | Average excitation temperature                         | `K`      | $\log_{10}T_{{\rm ex}, ul} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$  | `[1.0, 0.5]`                  |
+| `log10_LTE_precision`         | LTE precision                                          | ``       | $\log_{10} 1/a_{\rm LTE} \sim p[0] + {\rm HalfNormal}(\sigma=p[1])$ | `[-6.0, 1.0]`                 |  |
 
 
 | Hyper Parameter<br>`variable` | Parameter                                   | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
@@ -104,15 +105,15 @@ The basic model is `CNModel`, a general purpose model for modelling hyperfine sp
 
 ![cn ratio model graph](docs/source/notebooks/cn_ratio_model.png)
 
-| Cloud Parameter<br>`variable` | Parameter                                                     | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`           | Default<br>`prior_{variable}` |
-| :---------------------------- | :------------------------------------------------------------ | :------- | :----------------------------------------------------------------- | :---------------------------- |
-| `log10_N_12CN`                | Total ${\rm CN}$ column density across upper and lower states | `cm-2`   | $\log_{10}N_{\rm CN} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$       | `[13.5, 1.0]`                 |
-| `ratio_12C_13C`               | $^{12}{\rm C}/^{13}{\rm C}$ abundance ratio by number         | ``       | $^{12}{\rm C}/^{13}{\rm C} \sim {\rm Gamma}(\mu=p_0, \sigma=p_1)$  | `[75.0, 25.0]`                |
-| `log10_Tkin`                  | Kinetic temperature                                           | `K`      | $\log_{10}T_K \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$              | `[1.0, 0.5]`                  |
-| `velocity`                    | Velocity (same reference frame as data)                       | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                         | `[0.0, 10.0]`                 |
-| `fwhm_nonthermal`             | Non-thermal FWHM line width                                   | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$                | `0.0`                         |  |
-| `log10_Tex`                   | Average excitation temperature                                | `K`      | $\log_{10}T_{{\rm ex}, ul} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$ | `[1.0, 0.5]`                  |
-| `LTE_precision`               | LTE precision                                                 | ``       | $1/a_{\rm LTE} \sim {\rm Gamma}(\alpha=1, \beta=p)$                | `100.0`                       |  |
+| Cloud Parameter<br>`variable` | Parameter                                                     | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}`            | Default<br>`prior_{variable}` |
+| :---------------------------- | :------------------------------------------------------------ | :------- | :------------------------------------------------------------------ | :---------------------------- |
+| `log10_N_12CN`                | Total ${\rm CN}$ column density across upper and lower states | `cm-2`   | $\log_{10}N_{\rm CN} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$        | `[13.5, 1.0]`                 |
+| `ratio_13C_12C`               | $^{13}{\rm C}/^{12}{\rm C}$ abundance ratio by number         | ``       | $^{13}{\rm C}/^{12}{\rm C} \sim {\rm HalfNormal}(\sigma=p)$         | `0.1`                         |
+| `log10_Tkin`                  | Kinetic temperature                                           | `K`      | $\log_{10}T_K \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$               | `[1.0, 0.5]`                  |
+| `velocity`                    | Velocity (same reference frame as data)                       | `km s-1` | $V \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$                          | `[0.0, 10.0]`                 |
+| `fwhm_nonthermal`             | Non-thermal FWHM line width                                   | `km s-1` | $\Delta V_{\rm nt} \sim {\rm HalfNormal}(\sigma=p)$                 | `0.0`                         |  |
+| `log10_Tex`                   | Average excitation temperature                                | `K`      | $\log_{10}T_{{\rm ex}, ul} \sim {\rm Normal}(\mu=p_0, \sigma=p_1)$  | `[1.0, 0.5]`                  |
+| `log10_LTE_precision`         | LTE precision                                                 | ``       | $\log_{10} 1/a_{\rm LTE} \sim p[0] + {\rm HalfNormal}(\sigma=p[1])$ | `[-6.0, 1.0]`                 |  |
 
 | Hyper Parameter<br>`variable` | Parameter                                   | Units    | Prior, where<br>($p_0, p_1, \dots$) = `prior_{variable}` | Default<br>`prior_{variable}` |
 | :---------------------------- | :------------------------------------------ | :------- | :------------------------------------------------------- | :---------------------------- |
