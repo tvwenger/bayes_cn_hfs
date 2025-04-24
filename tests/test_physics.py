@@ -92,7 +92,7 @@ def test_calc_optical_depth():
 def test_calc_TR():
     freq = 112000.0
     boltz_factor = 0.5
-    TR = physics.calc_TR(freq, boltz_factor)
+    TR = physics.calc_TR(freq, boltz_factor).eval()
     assert not np.isnan(TR)
 
 
@@ -102,7 +102,9 @@ def test_predict_tau_spectra():
     velocity = np.array([-5.0, 5.0])
     fwhm = np.array([3.0, 5.0])
     fwhm_L = 1.0
-    tau_spectra = physics.predict_tau_spectra(_MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L).eval()
+    tau_spectra = physics.predict_tau_spectra(
+        _MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L
+    ).eval()
     assert tau_spectra.shape == (500, len(_MOL_DATA["freq"]), 2)
     assert not np.any(np.isnan(tau_spectra))
 
@@ -113,7 +115,9 @@ def test_radiative_transfer():
     velocity = np.array([-5.0, 5.0])
     fwhm = np.array([3.0, 5.0])
     fwhm_L = 1.0
-    tau_spectra = physics.predict_tau_spectra(_MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L).eval()
+    tau_spectra = physics.predict_tau_spectra(
+        _MOL_DATA, freq_axis, tau, velocity, fwhm, fwhm_L
+    ).eval()
     freq = 113500.0
     boltz_factor = np.random.uniform(0.0, 1.0, size=(len(_MOL_DATA["freq"]), 2))
     TR = physics.calc_TR(freq, boltz_factor)
