@@ -7,6 +7,8 @@
 
 A Bayesian CN Hyperfine Spectroscopy Model
 
+**This package is deprecated and no longer maintained. Instead, use [`bayes_hfs`](https://github.com/tvwenger/bayes_hfs), a general purpose model for molecular hyperfine spectroscopy.**
+
 `bayes_cn_hfs` implements models to infer the physics of the interstellar medium from hyperfine spectroscopy observations of CN as well as the carbon isotopic ratio from observations of CN and $^{13}$CN.
 
 - [Installation](#installation)
