@@ -1,7 +1,7 @@
 bayes_cn_hfs
 ============
 
-**This package is deprecated and no longer maintained. Instead, use `bayes_hfs <https://github.com/tvwenger/bayes_hfs>`_, a general purpose model for molecular hyperfine spectroscopy.**
+NOTE: This package is deprecated and no longer maintained. Instead, use `bayes_hfs <https://github.com/tvwenger/bayes_hfs>`_, a general purpose model for molecular hyperfine spectroscopy.
 
 ``bayes_cn_hfs`` implements two models for molecular hyperfine spectroscopy. The first is ``CNModel``, which can model the emission of ``CN`` or ``13CN``.
 The second is ``CNRatioModel``, which predicts both ``CN`` and ``13CN`` observations in order to infer the ``12C/13C`` isotopic ratio. ``bayes_cn_hfs`` 
